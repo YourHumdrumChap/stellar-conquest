@@ -1,0 +1,557 @@
+<!--
+Galactic Conquest RTS (single-file)
+Save this file as `index.html` and open in a browser (or publish to GitHub Pages).
+Features included:
+- Main Menu (start, seed, regenerate map)
+- Ability to return to Main Menu while in-game
+- Procedurally generated galaxy map (stars, starlanes)
+- Color-coded starlanes (trade / military / neutral)
+- Animated ships that move along starlanes
+- An economy system (stars produce income, build ships)
+- Simple AI opponents (expand and attack)
+- Win/Loss conditions
+
+This is a functional, playable prototype intended as a starting point to expand.
+If you'd like this split into multiple files (README, assets, tests) or a more advanced production-ready engine
+(with pathfinding, animations, audio, saving, multiplayer, etc.), tell me and I will generate those files too.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Galactic Conquest RTS (Prototype)</title>
+  <style>
+    :root{--bg:#0b1020;--panel:rgba(10,12,20,0.8);--accent:#37d67a;--muted:#99a0b0}
+    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(180deg,#04050a, #071027);color:#e6eef6}
+    canvas{display:block;width:100vw;height:100vh}
+    .overlay{position:fixed;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center}
+    .menu{background:var(--panel);padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.6);width:680px;max-width:92%;}
+    .title{font-size:28px;margin:0 0 12px}
+    .row{display:flex;gap:8px;align-items:center}
+    .btn{background:#17202b;border:1px solid rgba(255,255,255,0.04);padding:10px 14px;border-radius:8px;color:#e7f7ee;cursor:pointer}
+    .btn:active{transform:translateY(1px)}
+    .small{font-size:13px;color:var(--muted)}
+    .hud{position:fixed;left:16px;top:16px;background:rgba(3,6,12,0.6);padding:10px;border-radius:8px;min-width:220px}
+    .rightpanel{position:fixed;right:16px;top:16px;background:rgba(3,6,12,0.6);padding:10px;border-radius:8px;min-width:220px}
+    .stat{font-size:13px;color:var(--muted)}
+    .star-label{font-weight:600;font-size:12px}
+    .footer{margin-top:10px;font-size:12px;color:var(--muted)}
+    .control-btn{display:block;width:100%;padding:8px;margin-top:6px;border-radius:6px;background:#0f1720;border:1px solid rgba(255,255,255,0.03);cursor:pointer}
+    .logo{font-weight:700;color:var(--accent)}
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div id="mainMenu" class="overlay">
+    <div class="menu">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <h1 class="title"><span class="logo">Galactic Conquest</span> — RTS Prototype</h1>
+        <div class="small">Prototype • Single-file</div>
+      </div>
+
+      <p class="small">Procedurally generated galaxy. Click a star to manage it. Build ships, expand, and conquer.</p>
+
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <button id="startBtn" class="btn">Start Game</button>
+        <button id="genBtn" class="btn">Regenerate</button>
+        <input id="seedInput" placeholder="seed (optional)" style="flex:1;padding:10px;border-radius:8px;background:#08111a;border:1px solid rgba(255,255,255,0.03);color:#eaf6ee" />
+      </div>
+
+      <div style="margin-top:14px;display:flex;gap:10px">
+        <div style="flex:1">
+          <div class="small">Stars</div>
+          <div class="small">Nearest-lane algorithm + k-nearest connections</div>
+        </div>
+        <div style="flex:1">
+          <div class="small">Lanes</div>
+          <div class="small">Color-coded by lane-type (trade / military / neutral)</div>
+        </div>
+      </div>
+
+      <div class="footer">Controls: Click stars to select • Build ships from selected star • Press <b>M</b> to return to Main Menu • Press <b>G</b> to regenerate galaxy</div>
+    </div>
+  </div>
+
+  <div id="hud" class="hud" style="display:none">
+    <div id="playerStats"></div>
+    <div style="margin-top:8px"><button id="menuBtn" class="control-btn">Return to Main Menu (M)</button></div>
+  </div>
+
+  <div id="rightPanel" class="rightpanel" style="display:none">
+    <div id="selectedInfo"><div class="small">No star selected</div></div>
+  </div>
+
+  <script>
+  // --- Utility & RNG (seedable) ---
+  class RNG {
+    constructor(seed) {
+      if (seed == null) seed = Math.floor(Math.random() * 1e9).toString();
+      this.seed = String(seed);
+      // simple hash to seed
+      let h = 2166136261 >>> 0;
+      for (let i = 0; i < this.seed.length; i++) h = Math.imul(h ^ this.seed.charCodeAt(i), 16777619);
+      this._state = h >>> 0;
+    }
+    next() {
+      // xorshift32
+      let x = this._state;
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      this._state = x >>> 0;
+      return this._state / 0xFFFFFFFF;
+    }
+    range(a,b){return a + (b-a)*this.next();}
+    pick(arr){return arr[Math.floor(this.next()*arr.length)];}
+    int(a,b){return Math.floor(this.range(a,b+1));}
+  }
+
+  // --- Core Game Data ---
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let DPR = Math.max(1, window.devicePixelRatio || 1);
+
+  function resize() {
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = innerWidth * DPR;
+    canvas.height = innerHeight * DPR;
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // Game state
+  let game = {
+    running: false,
+    rng: new RNG(Date.now()),
+    stars: [],
+    lanes: [], // {a,b,type}
+    ships: [],
+    factions: [],
+    selectedStar: null,
+    lastTick: performance.now(),
+    elapsed: 0,
+    settings: {stars:40, kNeighbor:3}
+  };
+
+  // Factions: player + AIs
+  function createFactions() {
+    game.factions = [];
+    const player = {id:0,name:'You',color:'#37d67a',isPlayer:true,money:200,score:0};
+    game.factions.push(player);
+    const colors = ['#d75a5a','#5aa8d7','#c46ad7','#d7b85a'];
+    for (let i=0;i<2;i++){
+      game.factions.push({id:i+1,name:'AI-'+(i+1),color:colors[i%colors.length],isPlayer:false,money:100,score:0});
+    }
+  }
+
+  // Procedural Galaxy Generation
+  function generateGalaxy(seed) {
+    game.rng = new RNG(seed ?? (Date.now()).toString());
+    game.stars = [];
+    game.lanes = [];
+    game.ships = [];
+
+    const W = innerWidth - 200, H = innerHeight - 200;
+    const padding = 80;
+    const count = Math.max(12, game.settings.stars);
+
+    // place stars with minimum distance
+    const minDist = 80;
+    let attempts = 0;
+    while (game.stars.length < count && attempts < count*200) {
+      attempts++;
+      const x = padding + game.rng.range(0,W);
+      const y = padding + game.rng.range(0,H);
+      let ok = true;
+      for (const s of game.stars) {
+        const dx = s.x-x, dy = s.y-y;
+        if (dx*dx+dy*dy < minDist*minDist) {ok=false;break}
+      }
+      if (!ok) continue;
+      game.stars.push({id:game.stars.length, x, y, name:'Star-'+(game.stars.length+1), resources:game.rng.int(10,40), population:game.rng.int(0,20), owner:null, production:0});
+    }
+
+    // create lanes by k-nearest neighbors and then add random extras
+    const k = Math.max(2,game.settings.kNeighbor);
+    for (let i=0;i<game.stars.length;i++){
+      const s = game.stars[i];
+      const dists = game.stars.map(t => ({id:t.id,d:dist(s,t)})).filter(t=>t.id!==s.id).sort((a,b)=>a.d-b.d);
+      for (let j=0;j<Math.min(k,dists.length);j++){
+        const other = dists[j].id;
+        if (!laneExists(s.id,other)) {
+          game.lanes.push({a:s.id,b:other,type:chooseLaneType(game.rng)});
+        }
+      }
+    }
+    // random extras
+    for (let i=0;i<game.stars.length;i++){
+      if (game.rng.next() < 0.08) {
+        const a = i;
+        const b = game.rng.int(0,game.stars.length-1);
+        if (a!==b && !laneExists(a,b)) game.lanes.push({a,b,type:chooseLaneType(game.rng)});
+      }
+    }
+
+    // create factions and assign some home stars
+    createFactions();
+    // shuffle stars and assign initial ownerships
+    const order = shuffle(game.stars.map(s=>s.id),game.rng);
+    // first owner is player
+    game.stars[order[0]].owner = 0; game.stars[order[0]].population = 30; game.stars[order[0]].production = 8;
+    // next for AIs
+    let idx=1;
+    for (let f=1; f<game.factions.length; f++){
+      game.stars[order[idx]].owner = f; game.stars[order[idx]].population = 20; game.stars[order[idx]].production = 6; idx++;
+    }
+    // a few neutral
+    for (let i=idx;i<Math.min(idx+6,game.stars.length);i++){game.stars[order[i]].owner = null; game.stars[order[i]].population = game.rng.int(1,10)}
+
+    // done
+    game.selectedStar = null;
+  }
+
+  function chooseLaneType(rng){
+    const n = rng.next();
+    if (n < 0.18) return 'trade';
+    if (n < 0.32) return 'military';
+    return 'normal';
+  }
+
+  function laneExists(a,b){
+    return game.lanes.some(l => (l.a===a && l.b===b) || (l.a===b && l.b===a));
+  }
+
+  function dist(a,b){const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy)}
+
+  function shuffle(arr,rng){let a=arr.slice(); for (let i=a.length-1;i>0;i--){let j=rng.int(0,i);[a[i],a[j]]=[a[j],a[i]];}return a}
+
+  // --- Ships & Movement ---
+  let shipId = 1;
+  function buildShip(starId, factionId, type='scout'){
+    const star = game.stars[starId];
+    const faction = game.factions[factionId];
+    const cost = (type==='scout')?30:80;
+    if (faction.money < cost) return false;
+    faction.money -= cost;
+    const ship = {id:shipId++,owner:factionId,type,speed:(type==='scout')?0.9:0.55,from:starId,to:null,progress:0, hp:(type==='scout')?10:30,atk:(type==='scout')?6:16};
+    // station at star until given orders
+    game.ships.push(ship);
+    return ship;
+  }
+
+  function orderShipTo(ship, targetId){
+    // find lane
+    if (ship.from === targetId) return;
+    if (!laneExists(ship.from, targetId)) return false;
+    ship.to = targetId; ship.progress = 0;
+    return true;
+  }
+
+  // Create a moving ship from star A to B
+  function spawnShipTravel(factionId, fromId, toId, type='scout'){
+    const from = game.stars.find(s=>s.id===fromId);
+    const to = game.stars.find(s=>s.id===toId);
+    if (!from || !to) return;
+    const ship = {id:shipId++,owner:factionId,type,speed:(type==='scout')?0.9:0.55,from:fromId,to:toId,progress:0, hp:(type==='scout')?10:30,atk:(type==='scout')?6:16};
+    game.ships.push(ship);
+    return ship;
+  }
+
+  // --- Simple combat resolution on arrival ---
+  function resolveArrival(ship, targetStar){
+    // If target is owned by same faction, the ship simply docks
+    if (targetStar.owner === ship.owner){
+      ship.from = targetStar.id; ship.to = null; ship.progress = 0; return;
+    }
+    // Attack defenders: defenders represented by population/defense strength
+    const defenders = (targetStar.population || 0);
+    const defStrength = Math.max(0, defenders*1.2);
+    const atk = ship.atk;
+    // Single-ship combat: simple probabilistic
+    if (atk >= defStrength) {
+      // attacker wins and captures
+      targetStar.owner = ship.owner; targetStar.population = Math.max(3, Math.floor((atk - defStrength)+5));
+      // remove ship
+      removeShipById(ship.id);
+    } else {
+      // defender holds, ship destroyed
+      removeShipById(ship.id);
+      // slight defender losses
+      targetStar.population = Math.max(0, Math.floor(targetStar.population - Math.floor(atk/1.5)));
+    }
+  }
+
+  function removeShipById(id){ const i = game.ships.findIndex(s=>s.id===id); if (i>=0) game.ships.splice(i,1); }
+
+  // --- AI Behavior (basic) ---
+  function aiTick(dt){
+    // each AI will sometimes build and send ships
+    for (const f of game.factions.filter(ff=>!ff.isPlayer)){
+      // income growth
+      if (game.rng.next() < 0.02) f.money += 5;
+      // pick owned stars
+      const owned = game.stars.filter(s=>s.owner===f.id);
+      if (owned.length===0) continue;
+      // build occasional ship
+      if (game.rng.next() < 0.015 && f.money > 40){
+        const s = game.rng.pick(owned);
+        f.money -= 40; spawnShipTravel(f.id, s.id, findNearestEnemyOrNeutral(s.id,f.id));
+      }
+    }
+  }
+
+  function findNearestEnemyOrNeutral(fromId, factionId){
+    const from = game.stars.find(s=>s.id===fromId);
+    let best = null; let bestd = Infinity;
+    for (const s of game.stars){
+      if (s.id===from.id) continue;
+      if (!laneExists(from.id, s.id)) continue;
+      if (s.owner === factionId) continue; // skip own
+      const d = dist(from,s);
+      if (d < bestd){ bestd = d; best = s.id; }
+    }
+    if (best==null) {
+      // fallback any neutral/enemy star
+      for (const s of game.stars){ if (s.owner !== factionId && s.id!==from.id) return s.id; }
+      return from.id;
+    }
+    return best;
+  }
+
+  // --- Economy Tick ---
+  function economyTick(dt){
+    // each owned star produces resources/money
+    for (const s of game.stars){
+      if (s.owner!=null){
+        const faction = game.factions[s.owner];
+        const income = Math.max(1, Math.floor((s.resources * 0.12) + (s.population * 0.08)));
+        faction.money += income * dt*0.2; // scaled by dt
+      } else {
+        // neutral stars may slowly grow population
+        s.population = Math.min(40, s.population + 0.002*dt);
+      }
+    }
+  }
+
+  // --- Game Loop ---
+  function update(dt){
+    game.elapsed += dt;
+    // ships movement
+    for (const ship of game.ships.slice()){
+      if (ship.to == null) continue;
+      const from = game.stars.find(s=>s.id===ship.from);
+      const to = game.stars.find(s=>s.id===ship.to);
+      if (!from || !to) continue;
+      const d = dist(from,to);
+      const speed = ship.speed; // units per second in our normalized map
+      ship.progress += (speed * dt) / (d*0.08 + 20); // normalization fudge to make visible
+      if (ship.progress >= 1){
+        // arrive
+        resolveArrival(ship,to);
+      }
+    }
+
+    // AI
+    aiTick(dt);
+
+    // economy
+    economyTick(dt);
+
+    // check win condition
+    checkWinLoss();
+  }
+
+  let gameOver = false;
+  function checkWinLoss(){
+    if (gameOver) return;
+    const playerStars = game.stars.filter(s=>s.owner===0).length;
+    const total = game.stars.length;
+    if (playerStars === 0){ gameOver=true; setTimeout(()=>showEnd('Defeat — you lost all your stars'),400); }
+    if (playerStars/total > 0.6){ gameOver=true; setTimeout(()=>showEnd('Victory — you control the galaxy!'),200); }
+  }
+
+  function showEnd(msg){
+    alert(msg);
+    // return to menu
+    showMainMenu();
+  }
+
+  // --- Rendering ---
+  function draw(){
+    // clear
+    ctx.clearRect(0,0,innerWidth,innerHeight);
+    // background grid
+    drawBackground();
+    // lanes
+    for (const lane of game.lanes){
+      const a = game.stars[lane.a], b = game.stars[lane.b];
+      drawLane(a,b,lane.type);
+    }
+    // stars
+    for (const s of game.stars){ drawStar(s); }
+    // ships
+    for (const sh of game.ships){ drawShip(sh); }
+    // HUD overlays drawn by HTML
+  }
+
+  function drawBackground(){
+    ctx.save();
+    const g = ctx.createLinearGradient(0,0,0,innerHeight);
+    g.addColorStop(0,'rgba(7,10,20,0.45)'); g.addColorStop(1,'rgba(2,4,10,0.9)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,innerWidth,innerHeight);
+    // stars field
+    for (let i=0;i<120;i++){
+      const x = (i*37)%innerWidth; const y = (i*73)%innerHeight;
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(x,y,1,1);
+    }
+    ctx.restore();
+  }
+
+  function drawLane(a,b,type){
+    ctx.save();
+    const midx = (a.x+b.x)/2, midy=(a.y+b.y)/2;
+    const thickness = (type==='trade')?3:(type==='military')?2:1.2;
+    ctx.lineWidth = thickness;
+    let color = '#9fb0c8';
+    if (type==='trade') color='#f0d96b';
+    if (type==='military') color='#e96c6c';
+    ctx.strokeStyle = color;
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    // subtle glow
+    ctx.globalAlpha = 0.06; ctx.lineWidth = thickness+6; ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function drawStar(s){
+    ctx.save();
+    // glow
+    ctx.beginPath(); ctx.arc(s.x,s.y,14,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.02)'; ctx.fill();
+    // core color by owner
+    let color = '#aaaaaa';
+    if (s.owner!=null) color = game.factions[s.owner].color;
+    ctx.beginPath(); ctx.arc(s.x,s.y,8,0,Math.PI*2); ctx.fillStyle=color; ctx.fill();
+    // ring
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.stroke();
+    // label
+    ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.font='11px ui-sans-serif'; ctx.fillText(s.name, s.x+10, s.y+4);
+    // population small
+    ctx.fillStyle='rgba(255,255,255,0.6)'; ctx.font='10px ui-sans-serif'; ctx.fillText('Pop: '+Math.round(s.population), s.x+10, s.y+18);
+    // highlight if selected
+    if (game.selectedStar && game.selectedStar.id === s.id){
+      ctx.beginPath(); ctx.arc(s.x,s.y,18,0,Math.PI*2); ctx.strokeStyle='rgba(255,255,255,0.2)'; ctx.lineWidth=2; ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawShip(sh){
+    ctx.save();
+    let x = 0, y = 0;
+    if (sh.to == null){
+      const s = game.stars.find(st=>st.id===sh.from); x=s.x; y=s.y;
+    } else {
+      const a = game.stars.find(st=>st.id===sh.from); const b = game.stars.find(st=>st.id===sh.to);
+      x = a.x + (b.x-a.x)*easeInOutQuad(sh.progress);
+      y = a.y + (b.y-a.y)*easeInOutQuad(sh.progress);
+    }
+    // ship body
+    const col = game.factions[sh.owner].color;
+    ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+    // simple direction trail
+    ctx.globalAlpha = 0.25; ctx.fillStyle = col; ctx.fillRect(x-1,y+5,2,6);
+    ctx.restore();
+  }
+
+  function easeInOutQuad(t){ return t<0.5 ? 2*t*t : -1 + (4-2*t)*t }
+
+  // --- Input & UI ---
+  canvas.addEventListener('click', (ev)=>{
+    const rect = canvas.getBoundingClientRect(); const x = (ev.clientX - rect.left); const y = (ev.clientY - rect.top);
+    // click star
+    let clicked = null;
+    for (const s of game.stars){ if (Math.hypot(s.x-x,s.y-y) < 12) { clicked = s; break; } }
+    if (clicked) selectStar(clicked.id);
+  });
+
+  function selectStar(id){ game.selectedStar = game.stars.find(s=>s.id===id); updateRightPanel(); }
+
+  function updateRightPanel(){
+    const rp = document.getElementById('rightPanel'); rp.style.display = game.running ? 'block':'none';
+    const el = document.getElementById('selectedInfo');
+    if (!game.selectedStar) { el.innerHTML = '<div class="small">No star selected</div>'; return }
+    const s = game.selectedStar; const owner = s.owner==null ? 'Neutral' : game.factions[s.owner].name;
+    el.innerHTML = `<div class=\"star-label\">${s.name} <span style=\"font-weight:400;color:var(--muted);font-size:12px\">(${owner})</span></div>`+
+      `<div class=\"small\">Resources: ${s.resources} • Pop: ${Math.round(s.population)}</div>`+
+      `<div style=\"margin-top:8px\"><button id=\"buildScout\" class=\"control-btn\">Build Scout (30)</button><button id=\"buildFrigate\" class=\"control-btn\">Build Frigate (80)</button></div>`+
+      `<div style=\"margin-top:6px\"><button id=\"sendToBtn\" class=\"control-btn\">Send Fleet to nearest enemy/neutral</button></div>`;
+    document.getElementById('buildScout').onclick = ()=>{ if (game.selectedStar.owner===0) { buildShip(game.selectedStar.id,0,'scout'); updateHud(); } };
+    document.getElementById('buildFrigate').onclick = ()=>{ if (game.selectedStar.owner===0) { buildShip(game.selectedStar.id,0,'frigate'); updateHud(); } };
+    document.getElementById('sendToBtn').onclick = ()=>{
+      // send all local ships (owned by player and stationed at this star) to nearest target
+      const s = game.selectedStar;
+      const shipsHere = game.ships.filter(sh => sh.from === s.id && sh.owner===0 && sh.to===null);
+      const target = findNearestEnemyOrNeutral(s.id,0);
+      for (const sh of shipsHere) { if (laneExists(s.id,target)) { sh.to = target; sh.progress=0; } }
+    };
+  }
+
+  function updateHud(){ document.getElementById('playerStats').innerHTML = `<div class=\"small\">Money: ${Math.floor(game.factions[0].money)}</div>`; }
+
+  // main menu controls
+  document.getElementById('startBtn').addEventListener('click', ()=>{ startGame(); });
+  document.getElementById('genBtn').addEventListener('click', ()=>{ const seed=document.getElementById('seedInput').value || Date.now().toString(); generateGalaxy(seed); draw(); });
+  document.getElementById('menuBtn').addEventListener('click', ()=>{ showMainMenu(); });
+
+  // keyboard shortcuts
+  addEventListener('keydown', (e)=>{
+    if (e.key === 'm' || e.key === 'M') { showMainMenu(); }
+    if (e.key === 'g' || e.key === 'G') { const seed=document.getElementById('seedInput').value || Date.now().toString(); generateGalaxy(seed); }
+  });
+
+  function showMainMenu(){
+    game.running = false; document.getElementById('mainMenu').style.display='flex'; document.getElementById('hud').style.display='none'; document.getElementById('rightPanel').style.display='none';
+    // reset some state
+    game.ships = []; gameOver = false;
+  }
+
+  function startGame(){
+    document.getElementById('mainMenu').style.display='none'; document.getElementById('hud').style.display='block'; document.getElementById('rightPanel').style.display='block';
+    game.running = true; game.lastTick = performance.now(); updateHud(); updateRightPanel();
+  }
+
+  // initial generate and draw
+  generateGalaxy(Date.now().toString()); draw();
+
+  // animation loop
+  function loop(t){
+    const dt = Math.min(60, (t - game.lastTick))/1000; game.lastTick = t; if (game.running) update(dt*1.0);
+    draw(); updateHud(); requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // helper to export an example order: if user builds then selects target, we need to move ships
+  // simple control: clicking on a star while a star is selected and both connected will order all player ships at selected star to move to clicked star
+  canvas.addEventListener('dblclick', (ev)=>{
+    const rect = canvas.getBoundingClientRect(); const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    let clicked = null;
+    for (const s of game.stars){ if (Math.hypot(s.x-x,s.y-y) < 12) { clicked = s; break; } }
+    if (clicked && game.selectedStar && game.selectedStar.id !== clicked.id){
+      // order ships at selected star to go to clicked star if lane exists
+      const shipsHere = game.ships.filter(sh => sh.from === game.selectedStar.id && sh.owner===0 && sh.to===null);
+      if (!laneExists(game.selectedStar.id, clicked.id)) { alert('No direct lane between these stars'); return; }
+      for (const sh of shipsHere){ sh.to = clicked.id; sh.progress=0; }
+    }
+  });
+
+  // tiny utility exposed for debug
+  window.Galaxy = game;
+
+  </script>
+</body>
+</html>
