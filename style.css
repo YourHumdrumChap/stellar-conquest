@@ -1,0 +1,45 @@
+:root{
+  --bg:#0b1020;
+  --panel:#0f1724;
+  --accent:#4DA6FF;
+  --danger:#FF6666;
+  --muted:#9aa6b2;
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+}
+html,body{
+  height:100%;
+  margin:0;
+  background:linear-gradient(180deg,#05060b 0%, #0b1020 100%);
+  color:#e6eef6;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+#hud{ display:flex; gap:12px; padding:12px; box-sizing:border-box; align-items:flex-start; }
+#leftPanel, #rightPanel { width:300px; background:var(--panel); border-radius:12px; padding:12px; box-shadow:0 6px 20px rgba(0,0,0,0.6);}
+#canvasWrap { flex:1; display:flex; align-items:center; justify-content:center; }
+canvas { background: radial-gradient(circle at 30% 20%, #081028 0%, #030413 40%); border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,0.7); border:1px solid rgba(255,255,255,0.03); }
+
+.panelTitle { font-weight:700; color:var(--accent); margin-bottom:8px; }
+.statRow { display:flex; justify-content:space-between; margin-bottom:6px; color:var(--muted); }
+#selectedInfo { font-size:14px; line-height:1.45; color:#cfe7ff; margin-bottom:8px; }
+
+.controls { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+button { padding:8px 10px; border-radius:8px; border:none; background:#14222f; color:#dff0ff; cursor:pointer; }
+button.big { font-weight:700; padding:10px; background:linear-gradient(180deg,#134a6f,#0c3148); }
+button.danger { background:linear-gradient(180deg,#7b1b1b,#b32b2b); }
+button:active { transform:translateY(1px); }
+
+.overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(1,2,6,0.7); z-index:50; }
+.overlay.hide { display:none; }
+.overlay.show { display:flex; }
+.menuCard { background:linear-gradient(180deg,#071024,#041423); padding:24px; border-radius:12px; width:480px; max-width:92%; text-align:center; box-shadow:0 14px 50px rgba(0,0,0,0.8); border:1px solid rgba(255,255,255,0.03);}
+.menuButtons { display:flex; gap:8px; justify-content:center; margin:12px 0; }
+.small { color:var(--muted); font-size:12px; }
+#messages { min-height:120px; max-height:200px; overflow:auto; background:#071019; padding:8px; border-radius:8px; color:#bcd6ee; font-size:13px; }
+
+.systemLabel { font-size:11px; color: #dbefff; text-shadow: 0 1px 2px rgba(0,0,0,0.9); }
+
+@media (max-width: 1050px) {
+  #leftPanel, #rightPanel { display:none; }
+  #canvasWrap { padding:12px; }
+}
