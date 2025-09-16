@@ -113,6 +113,7 @@
           <div class="btnRow" style="margin-top:8px">
             <button id="buildFleet">Build Fleet (Cost: <span id="buildCost">150</span>)</button>
             <button id="sendFleet">Send Fleet</button>
+            <button id="autoCapture" title="Automatically capture a chain of weak nearby systems">Auto Capture</button>
           </div>
         </div>
 
@@ -709,6 +710,7 @@ function setupUI(){
   document.getElementById('buildOutpost').addEventListener('click', ()=> buildBuildingCommand('outpost'));
   document.getElementById('buildFleet').addEventListener('click', ()=> buildFleetCommand());
   document.getElementById('sendFleet').addEventListener('click', ()=>{ if(G.selectedFleets.length>0){ G.sendMode = true; document.getElementById('sendFleet').textContent = 'Click destination'; } else alert('Select some fleets by dragging a box over them first.'); });
+  document.getElementById('autoCapture').addEventListener('click', ()=>{ if(G.selectedFleets.length>0){ autoCaptureSelectedFleets(); } else alert('Select some fleets by dragging a box over them first.'); });
 
   document.getElementById('zoomSlider').addEventListener('input', (e)=>{ G.view.scale = parseFloat(e.target.value); draw(); });
 
@@ -940,6 +942,75 @@ function sendFleetAlong(f, path){
   f._to = path[1];
   f.moving = true;
   f.progress = 0;
+}
+
+/* ===== Auto Capture Feature =====
+   For each selected fleet, find the closest 'line' (sequence) of nearby enemy/neutral systems
+   ranked by low defense and proximity. Follow that line until the next hop would destroy the fleet.
+   The algorithm: greedily extend path choosing the weakest adjacent unowned system until
+   the next system's defense >= fleet.strength (i.e., would destroy if attacked next).
+*/
+function autoCaptureSelectedFleets(){
+  for(let f of G.selectedFleets.slice()){
+    if(!f || f.moving) continue;
+    const line = findWeakestClosestLine(f.currentNode, f.owner);
+    if(line && line.length>1){
+      // Ensure last hop won't be suicidal
+      let safeIndex = 0;
+      let simulatedStrength = f.strength;
+      // step through hops: when encountering a hostile/neutral system, check defense
+      for(let i=1;i<line.length;i++){
+        const node = line[i];
+        if(node.owner !== f.owner){
+          if(simulatedStrength > node.defense){
+            simulatedStrength = Math.max(1, Math.round(simulatedStrength - node.defense));
+            safeIndex = i;
+          } else {
+            break; // next attack would lose fleet
+          }
+        }
+      }
+      const safePath = line.slice(0, safeIndex+1);
+      if(safePath.length>1) sendFleetAlong(f, safePath);
+    }
+  }
+  // clear selection after issuing orders
+  G.selectedFleets = [];
+  updateSelectionUI(); draw();
+}
+
+function findWeakestClosestLine(startNode, owner){
+  // BFS outward but prefer nodes with low defense and that are closer.
+  // We'll collect candidate paths up to a small depth (e.g., 8) and score them.
+  const maxDepth = 8;
+  const paths = [];
+  const q = [[startNode]]; // queue of paths
+  const visited = new Set([startNode.id]);
+  while(q.length){
+    const path = q.shift();
+    const last = path[path.length-1];
+    if(path.length>1){
+      // score path: average defense of hostile systems along it weighted by distance
+      let defenseSum = 0, hostileCount = 0;
+      for(let i=1;i<path.length;i++){ const n=path[i]; if(n.owner !== owner){ defenseSum += n.defense; hostileCount++; } }
+      const avgDef = hostileCount? (defenseSum/hostileCount) : 0;
+      const score = (avgDef + hostileCount*0.5) + (path.length*0.1); // lower is better
+      paths.push({path, score, avgDef, hostileCount});
+    }
+    if(path.length-1 >= maxDepth) continue;
+    for(let nb of last.connected){
+      if(path.some(p=>p===nb)) continue; // avoid cycles
+      q.push(path.concat([nb]));
+    }
+  }
+  if(paths.length===0) return null;
+  // Filter to paths that start by moving toward an enemy/neutral system
+  const viable = paths.filter(p=>p.path.length>1 && p.hostileCount>0);
+  if(viable.length===0) return null;
+  // Sort by score then by distance from start
+  viable.sort((a,b)=> a.score - b.score);
+  // prefer the path whose first hostile node is closest
+  return viable[0].path;
 }
 
 /* ===== Drawing ===== */
