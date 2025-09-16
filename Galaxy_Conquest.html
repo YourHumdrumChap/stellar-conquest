@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Galactic Conquest — RTS Prototype (Fixed)</title>
+  <style>
+    :root{--bg:#071025;--panel:#0f1626;--accent:#4ea3ff;--accent2:#ff6b6b;--muted:#98a0b3}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;color:#dbe6ff;background:linear-gradient(180deg,#031020 0%, #05122a 70%);}
+    #container{display:flex;height:100vh;gap:12px;padding:14px;box-sizing:border-box}
+    #leftPane{width:300px;flex-shrink:0}
+    #menu,#settings{background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));border-radius:10px;padding:14px;box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+    h1{font-size:18px;margin:0 0 12px 0}
+    label{display:block;margin-top:8px;font-size:13px;color:var(--muted)}
+    input[type=range], input[type=number]{width:100%}
+    select,button,input{width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    button.primary{background:linear-gradient(90deg,var(--accent),#2ec4ff);color:#021022;border:none;font-weight:600}
+    #gameArea{flex:1;position:relative;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#061122,#071426)}
+    #topBar{position:absolute;left:12px;top:12px;z-index:50;background:rgba(5,8,15,0.6);padding:8px;border-radius:8px;display:flex;gap:8px;align-items:center}
+    #hud{position:absolute;right:12px;top:12px;z-index:50;background:rgba(5,8,15,0.6);padding:8px;border-radius:8px;min-width:260px}
+    #canvasWrap{width:100%;height:100%;display:flex}
+    canvas#gameCanvas{flex:1;display:block;cursor:crosshair}
+    .panel{margin-top:12px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.02)}
+    .small{font-size:12px;color:var(--muted)}
+    .systemInfo{font-size:13px;margin-top:8px}
+    .btnRow{display:flex;gap:8px;margin-top:8px}
+    .controlBtn{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    #footer{position:absolute;left:12px;bottom:12px;z-index:20;color:var(--muted);font-size:12px}
+    .legend{display:flex;gap:8px;align-items:center}
+    .legend .dot{width:12px;height:12px;border-radius:3px}
+    #minimap{width:200px;height:120px;border-radius:8px;background:rgba(0,0,0,0.12);margin-top:8px}
+    .progressBar{height:8px;background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden}
+    .progressFill{height:100%;background:linear-gradient(90deg,var(--accent),#2ec4ff);width:0%}
+    @media (max-width:900px){#leftPane{display:none}}
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="leftPane">
+      <div id="menu">
+        <h1>Galactic Conquest</h1>
+        <div class="small">A lightweight real-time strategy prototype — HTML + JS. Configure and Launch.</div>
+
+        <label for="difficulty">AI Difficulty</label>
+        <select id="difficulty">
+          <option value="0.6">Very Easy</option>
+          <option value="0.8">Easy</option>
+          <option value="1.0" selected>Normal</option>
+          <option value="1.25">Hard</option>
+          <option value="1.6">Very Hard</option>
+          <option value="2.2">Insane</option>
+        </select>
+
+        <label for="aiCount">Number of AI Opponents <span id="aiCountLabel">3</span></label>
+        <input id="aiCount" type="range" min="1" max="100" value="3">
+
+        <label for="systemsRange">Number of Star Systems <span id="sysCount">120</span></label>
+        <input id="systemsRange" type="range" min="5" max="1000" value="120">
+
+        <label for="seed">Galaxy Seed (optional)</label>
+        <input id="seed" placeholder="leave blank for random" />
+
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button id="launchBtn" class="primary">Launch</button>
+          <button id="loadExample">Example</button>
+        </div>
+
+        <div class="panel">
+          <div class="small">Controls</div>
+          <ul class="small">
+            <li>Click a system to select it.</li>
+            <li>Build fleets in controlled systems that have a shipyard.</li>
+            <li>Drag to select fleets, click "Send Fleet", then click destination.</li>
+            <li>Zoom with mouse wheel. Pan with right-drag (hold RMB).</li>
+          </ul>
+        </div>
+      </div>
+
+      <div id="settings" style="margin-top:12px">
+        <div class="small">Tips</div>
+        <div class="small systemInfo" id="tipsText">Capture systems, build mines to increase income, build shipyards to produce fleets. AI difficulty affects budget and aggressiveness.</div>
+      </div>
+    </div>
+
+    <div id="gameArea">
+      <div id="topBar" style="display:none">
+        <button id="toMenu">Main Menu</button>
+        <div class="small" id="statusText">Status:</div>
+      </div>
+
+      <div id="hud" style="display:none">
+        <div class="small">Credits: <span id="credits">0.0</span></div>
+        <div class="small">Income/sec: <span id="income">0.0</span></div>
+        <div class="small">Time: <span id="timeLabel">0s</span></div>
+
+        <div class="panel">
+          <div class="small">Selected</div>
+          <div id="selectedName" class="systemInfo">None</div>
+          <div id="selectedOwner" class="small"></div>
+          <div id="selectedIncome" class="small"></div>
+          <div class="btnRow">
+            <button id="buildMine">Build Mine (Cost: <span id="mineCost">80</span>)</button>
+            <button id="buildShipyard">Build Shipyard (Cost: <span id="yardCost">120</span>)</button>
+          </div>
+          <div style="margin-top:8px" class="small">Build Queue</div>
+          <div id="buildQueue"></div>
+        </div>
+
+        <div class="panel">
+          <div class="small">Fleets</div>
+          <div class="small">Selected Fleets: <span id="selFleetCount">0</span></div>
+          <div class="btnRow" style="margin-top:8px">
+            <button id="buildFleet">Build Fleet (Cost: <span id="buildCost">100</span>)</button>
+            <button id="sendFleet">Send Fleet</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="small">Zoom</div>
+          <input id="zoomSlider" type="range" min="0.3" max="2.5" step="0.05" value="1">
+          <div class="small" style="margin-top:6px">Minimap</div>
+          <canvas id="minimap" width="200" height="120"></canvas>
+        </div>
+      </div>
+
+      <div id="canvasWrap">
+        <canvas id="gameCanvas"></canvas>
+      </div>
+
+      <div id="footer" style="display:none">
+        <div class="legend">
+          <div class="dot" style="background:#4ea3ff"></div><div class="small">Player</div>
+          <div class="dot" style="background:#b0b8c6"></div><div class="small">Neutral</div>
+          <div class="dot" style="background:#ff6b6b"></div><div class="small">AI</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ===== Galactic Conquest RTS - corrected & improved ===== */
+
+/* ===== Utilities ===== */
+function seededRNG(seed){
+  seed = String(seed || '');
+  let h = 2166136261 >>> 0;
+  for(let i=0;i<seed.length;i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+  return function(){
+    h += 0x6D2B79F5;
+    let t = Math.imul(h ^ (h >>> 15), 1 | h);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+}
+function choice(rng,arr){ return arr[Math.floor(rng()*arr.length)]; }
+function lerp(a,b,t){ return a + (b-a)*t; }
+function dist(a,b){ let dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function randDecimal(rng,min,max){ return Math.round((min + rng()*(max-min))*10)/10; }
+const SYLL = ["sol","ar","ta","ri","zen","kor","nal","vex","lon","or","ima","tur","sha","bel","tek","zar","ion","qua","dra","lyr","neo","exa","pon","mar","vel","stel"];
+function makeName(rng, parts=2){ let s=""; for(let i=0;i<parts;i++) s += choice(rng,SYLL); return s.charAt(0).toUpperCase() + s.slice(1); }
+function pointLineDist(px,py,x1,y1,x2,y2){ const A = px - x1, B = py - y1, C = x2 - x1, D = y2 - y1; const dot = A*C + B*D; const len2 = C*C + D*D; let t = len2 === 0 ? 0 : dot / len2; t = Math.max(0, Math.min(1, t)); const projx = x1 + C * t, projy = y1 + D * t; return Math.hypot(px - projx, py - projy); }
+
+/* Convex hull */
+function convexHull(points){ if(points.length<3) return points.slice(); let pts = points.slice().sort((a,b)=>a.x===b.x? a.y-b.y : a.x-b.x); function cross(o,a,b){ return (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x); } let lower=[]; for(let p of pts){ while(lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p)<=0) lower.pop(); lower.push(p); } let upper=[]; for(let i=pts.length-1;i>=0;i--){ let p=pts[i]; while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p)<=0) upper.pop(); upper.push(p); } upper.pop(); lower.pop(); return lower.concat(upper); }
+
+/* ===== Classes ===== */
+class SystemNode{
+  constructor(id,x,y,sector,name){
+    this.id=id; this.x=x; this.y=y; this.sector=sector; this.name=name;
+    this.owner=0; this.defense=0; this.baseProd=0; this.mineBonus=0; this.buildings={mine:false,shipyard:false}; this.queue=[]; this.connected=[];
+  }
+}
+class Sector{ constructor(id,color,name){ this.id=id; this.color=color; this.name=name; this.systems=[]; this.owner=0; this.hull=[]; } }
+class Fleet{
+  constructor(id,owner,strength,currentNode){
+    this.id=id; this.owner=owner; this.strength=strength; this.currentNode=currentNode;
+    this.pos={x:currentNode.x,y:currentNode.y}; this.moving=false; this._from=null; this._to=null; this.progress=0;
+    this.speed=90 + Math.random()*30; this.path=[]; this.pathIndex=0;
+  }
+}
+
+/* ===== Global State ===== */
+const G = {
+  rng: Math.random,
+  systems:[], sectors:[], edges:[], fleets:[], players:{}, settings:{systems:120, difficulty:1.0, aiCount:3, seed:null},
+  time:0, running:false, selectedSystem:null, selectedFleets:[], sendMode:false,
+  view:{x:0,y:0,scale:1}, canvas:null, ctx:null, minimapCtx:null, hoverEdge:null, hoverNode:null,
+  nextFleetId:1, nextSystemId:1, width:3000, height:1800,
+  _selRect:null, _selStart:null, _suppressClick:0
+};
+
+function resetGame(){
+  G.systems=[]; G.sectors=[]; G.fleets=[]; G.edges=[]; G.players={}; G.nextFleetId=1; G.nextSystemId=1; G.time=0;
+  G.selectedSystem=null; G.selectedFleets=[]; G.sendMode=false; G.hoverEdge=null;
+}
+
+/* ===== Galaxy Generation ===== */
+function generateGalaxy(settings){
+  resetGame();
+  const seed = settings.seed || (Math.random().toString(36).slice(2));
+  G.seed = seed;
+  G.rng = seededRNG(seed + '_galaxy'); const rng = G.rng;
+  const W = G.width = 3000, H = G.height = 1800;
+  const total = Math.max(5, Math.min(1000, settings.systems || 120));
+  const sectorsCount = Math.max(3, Math.min(20, Math.round(total / (40 + rng()*20))));
+  let sectorCenters = [];
+  for(let i=0;i<sectorsCount;i++){
+    const cx = 120 + rng()*(W-240); const cy = 120 + rng()*(H-240);
+    sectorCenters.push({x:cx,y:cy});
+    const hue = Math.floor(rng()*360);
+    const color = `hsl(${hue} 70% 45% / 0.12)`;
+    const name = makeName(rng,2) + ' Sector';
+    G.sectors.push(new Sector(i,color,name));
+  }
+
+  // distribute systems among sectors
+  let assigned = 0;
+  for(let i=0;i<sectorsCount;i++){
+    let remaining = total - assigned;
+    let remainingSectors = sectorsCount - i;
+    let take = Math.max(1, Math.floor(rng()*(remaining/remainingSectors*1.6) + 1));
+    if(i===sectorsCount-1) take = remaining;
+    assigned += take;
+    for(let s=0;s<take;s++){
+      const jitter = 50 + rng()*220; const ang = rng()*Math.PI*2;
+      const cx = sectorCenters[i].x + Math.cos(ang)*rng()*jitter;
+      const cy = sectorCenters[i].y + Math.sin(ang)*rng()*jitter;
+      const sys = new SystemNode(G.nextSystemId++, cx, cy, i, makeName(rng,1 + Math.round(rng()*2)));
+      // production: normal systems 0.1 - 5.0 (tenths), player starting system will be boosted later to 0.1 - 10.0
+      sys.baseProd = randDecimal(rng, 0.1, 5.0);
+      sys.defense = Math.max(0, Math.round(2 + rng()*10));
+      G.systems.push(sys);
+      G.sectors[i].systems.push(sys);
+    }
+  }
+
+  // create k-nearest edges
+  const k = 3 + Math.floor(rng()*3);
+  for(let a of G.systems){
+    let dists = G.systems.map(b=>({b, d: dist(a,b)})).filter(o=>o.b!==a).sort((x,y)=>x.d-y.d);
+    for(let i=0;i<Math.min(k,dists.length);i++) addEdge(a,dists[i].b);
+  }
+
+  ensureConnected(rng);
+
+  // cross-sector lanes sometimes
+  for(let i=0;i<G.sectors.length;i++){
+    for(let j=i+1;j<G.sectors.length;j++){
+      if(rng()<0.25){
+        const a = choice(rng, G.sectors[i].systems);
+        const b = choice(rng, G.sectors[j].systems);
+        addEdge(a,b);
+      }
+    }
+  }
+
+  // sector hulls
+  for(let sec of G.sectors){ sec.hull = convexHull(sec.systems.map(s=>({x:s.x,y:s.y}))); }
+
+  // starting positions: pick central system for player
+  G.systems.sort((a,b)=>Math.hypot(a.x-W/2,a.y-H/2)-Math.hypot(b.x-W/2,b.y-H/2));
+  const playerStart = G.systems[0];
+  // make starting system a bit stronger and with production between 0.1 and 10
+  playerStart.owner = 1;
+  playerStart.defense = Math.max(playerStart.defense, 18);
+  playerStart.baseProd = randDecimal(rng, 0.1, 10.0);
+  playerStart.buildings.mine = true;
+  playerStart.mineBonus = randDecimal(rng, 0.1, 2.0);
+
+  // players
+  G.players[1] = {id:1, name:'Player', credits:400.0, income:0.0, isAI:false, difficulty:1.0};
+  const aiCount = Math.max(1, Math.min(100, settings.aiCount || 3));
+  for(let i=0;i<aiCount;i++){
+    const pid = 2 + i;
+    G.players[pid] = {id:pid, name:'AI-'+(i+1), credits:300 * settings.difficulty, income:0.0, isAI:true, difficulty: settings.difficulty};
+    const idx = Math.floor((i+1)*G.systems.length/(aiCount+2));
+    const s = G.systems[Math.min(G.systems.length-1, idx)];
+    s.owner = pid;
+    s.defense = Math.max(s.defense, 12);
+    // AI starting systems get a moderate production boost (0.1 - 5.0)
+    s.baseProd = Math.max(0.1, s.baseProd + randDecimal(rng, 0.1, 5.0));
+  }
+
+  recalcIncome();
+  G.view.x = W/2; G.view.y = H/2;
+  G.view.scale = clamp(lerp(0.6,1.0, 1 - Math.min(1, total/600)), 0.4, 1.2);
+}
+
+/* edges */
+function addEdge(a,b){
+  if(!a || !b || a===b) return;
+  for(let e of G.edges) if((e.a===a && e.b===b) || (e.a===b && e.b===a)) return;
+  G.edges.push({a:a,b:b});
+  a.connected.push(b); b.connected.push(a);
+}
+
+function ensureConnected(rng){
+  if(G.edges.length===0) return;
+  const visited = new Set();
+  const comps = [];
+  for(let s of G.systems){
+    if(visited.has(s)) continue;
+    const comp = [];
+    const stack = [s];
+    visited.add(s);
+    while(stack.length){
+      const cur = stack.pop();
+      comp.push(cur);
+      for(let n of cur.connected) if(!visited.has(n)){ visited.add(n); stack.push(n); }
+    }
+    comps.push(comp);
+  }
+  for(let i=0;i<comps.length-1;i++){
+    const a = choice(rng, comps[i]);
+    const b = choice(rng, comps[i+1]);
+    addEdge(a,b);
+  }
+}
+
+function recalcIncome(){
+  for(let pid in G.players){ G.players[pid].income = 0.0; }
+  for(let s of G.systems){
+    if(s.owner && G.players[s.owner]){
+      let prod = s.baseProd + (s.buildings.mine? s.mineBonus : 0);
+      G.players[s.owner].income += prod;
+    }
+  }
+}
+
+/* ===== Game Loop & Logic ===== */
+function tick(dt){
+  if(!G.running) return;
+  G.time += dt;
+
+  // economy (continuous)
+  for(let pid in G.players){ const p = G.players[pid]; p.credits += p.income * dt; }
+
+  // process system queues
+  for(let s of G.systems){
+    if(s.queue.length>0){
+      let task = s.queue[0];
+      task.timeLeft -= dt;
+      if(task.timeLeft <= 0){
+        const finished = s.queue.shift();
+        applyBuilt(s, finished);
+      }
+    }
+  }
+
+  // fleet movement (improved clarity)
+  for(let f of G.fleets.slice()){
+    if(f.moving && f._from && f._to){
+      const from=f._from, to=f._to;
+      const edgeLen = dist(from,to);
+      if(edgeLen===0) continue;
+      f.progress += f.speed * dt * 100 / edgeLen;
+      const t = clamp(f.progress/100,0,1);
+      f.pos.x = lerp(from.x,to.x,t);
+      f.pos.y = lerp(from.y,to.y,t);
+      if(f.progress>=100){
+        // arrive at 'to'
+        f.currentNode = to;
+        f.pos.x = to.x; f.pos.y = to.y;
+        // resolve combat on arrival
+        const survived = resolveArrival(f);
+        if(!survived) continue; // fleet destroyed and removed
+        // advance along path if there is another hop
+        if(f.path && (f.pathIndex + 1) < f.path.length - 1){
+          // move to next edge
+          f.pathIndex += 1; // now points to index of the node we just arrived at
+          const next = f.path[f.pathIndex+1];
+          f._from = f.path[f.pathIndex];
+          f._to = next;
+          f.progress = 0;
+          f.moving = true;
+        } else {
+          // finished path
+          f.moving = false; f._from = null; f._to = null; f.progress = 0;
+        }
+      }
+    }
+  }
+
+  // merge
+  mergeFleetsAtNodes();
+
+  // AI
+  aiTick(dt);
+
+  // recalc & UI
+  recalcIncome();
+  updateSelectionUI();
+  draw();
+  checkWinConditions();
+}
+
+function applyBuilt(system, task){
+  if(task.type==='mine'){
+    system.buildings.mine = true;
+    const bonus = randDecimal(G.rng, 0.1, 2.0);
+    system.mineBonus = (system.mineBonus || 0) + bonus;
+  }
+  else if(task.type==='shipyard'){
+    system.buildings.shipyard = true;
+  }
+  else if(task.type==='fleet'){
+    const fleet = new Fleet(G.nextFleetId++, task.owner, task.strength || 1, system);
+    G.fleets.push(fleet);
+  }
+}
+
+function resolveArrival(f){
+  const node = f.currentNode;
+  if(!node) return true;
+  // If friendly, just stop and stay there (will merge with other friendly fleets)
+  if(node.owner === f.owner){
+    f.moving = false; f._from = null; f._to = null; f.progress = 0;
+    f.pos.x = node.x; f.pos.y = node.y;
+    f.currentNode = node;
+    return true;
+  }
+  // hostile/neutral arrival: combat
+  if(f.strength > node.defense){
+    const leftover = f.strength - node.defense;
+    node.owner = f.owner;
+    node.defense = 0; // captured
+    f.strength = Math.max(1, Math.round(leftover));
+    recalcIncome();
+    return true;
+  } else if(f.strength === node.defense){
+    node.defense = 0;
+    removeFleet(f);
+    return false;
+  } else {
+    // fleet is destroyed or weakens enemy
+    node.defense = Math.max(0, node.defense - Math.round(f.strength));
+    removeFleet(f);
+    return false;
+  }
+}
+
+function mergeFleetsAtNodes(){
+  const map = new Map();
+  for(let f of G.fleets){
+    if(!f.moving){
+      if(!f.currentNode) continue;
+      const key = f.currentNode.id + '-' + f.owner;
+      if(!map.has(key)) map.set(key,[]);
+      map.get(key).push(f);
+    }
+  }
+  for(let [k, arr] of map){
+    if(arr.length>1){
+      const base = arr[0];
+      for(let i=1;i<arr.length;i++){ base.strength += arr[i].strength; removeFleet(arr[i]); }
+    }
+  }
+}
+
+function removeFleet(f){
+  const idx = G.fleets.indexOf(f);
+  if(idx>=0) G.fleets.splice(idx,1);
+}
+
+/* ===== AI ===== */
+function aiTick(dt){
+  if(!G._aiTimers) G._aiTimers = {};
+  for(let pid in G.players){
+    const p = G.players[pid];
+    if(!p.isAI) continue;
+    if(!G._aiTimers[pid]) G._aiTimers[pid] = 0;
+    G._aiTimers[pid] += dt;
+    const think = clamp(1.0 / p.difficulty, 0.2, 3.0);
+    if(G._aiTimers[pid] < think) continue;
+    G._aiTimers[pid] = 0;
+    const mySystems = G.systems.filter(s=>s.owner==pid);
+    // occasionally build shipyard
+    if(G.rng() < 0.25){
+      for(let s of mySystems){ if(!s.buildings.shipyard && p.credits >= 120){ p.credits -= 120; s.queue.push({type:'shipyard', timeLeft:7, total:7, owner:pid}); break; } }
+    }
+    // build fleets if shipyard present
+    for(let s of mySystems){ if(s.buildings.shipyard && p.credits >= 100 && G.rng() < 0.6){ p.credits -= 100; s.queue.push({type:'fleet', timeLeft:5, total:5, owner:pid, strength: Math.max(1,Math.round(G.rng()*3 + p.difficulty))}); break; } }
+    // move idle fleets
+    const idleFleets = G.fleets.filter(f=>f.owner==pid && !f.moving);
+    for(let f of idleFleets){
+      const target = findNearestTarget(f.currentNode, pid);
+      if(target){
+        const path = findPath(f.currentNode, target);
+        if(path.length>1){ sendFleetAlong(f,path); break; }
+      }
+    }
+  }
+}
+
+function findNearestTarget(node, owner){
+  let best=null, bd=Infinity;
+  for(let s of G.systems){ if(s.owner==owner) continue; const d = dist(node,s); if(d < bd){ bd=d; best=s; } }
+  return best;
+}
+
+/* ===== UI & Interaction ===== */
+function setupUI(){
+  const canvas = document.getElementById('gameCanvas');
+  G.canvas = canvas; G.ctx = canvas.getContext('2d');
+  const minimap = document.getElementById('minimap'); G.minimapCtx = minimap.getContext('2d');
+
+  function resize(){
+    canvas.width = Math.max(600, window.innerWidth - (document.getElementById('leftPane') ? document.getElementById('leftPane').offsetWidth + 40 : 40));
+    canvas.height = Math.max(400, window.innerHeight - 30);
+    draw();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // menu UI wiring
+  const sysRange = document.getElementById('systemsRange'); const sysCount = document.getElementById('sysCount');
+  sysRange.addEventListener('input', ()=> sysCount.textContent = sysRange.value);
+
+  const aiRange = document.getElementById('aiCount'); const aiLabel = document.getElementById('aiCountLabel');
+  aiRange.addEventListener('input', ()=> aiLabel.textContent = aiRange.value);
+
+  document.getElementById('launchBtn').addEventListener('click', ()=>{ 
+    const diff = parseFloat(document.getElementById('difficulty').value);
+    const systems = parseInt(document.getElementById('systemsRange').value,10);
+    const seed = document.getElementById('seed').value.trim() || null;
+    const aiCount = parseInt(document.getElementById('aiCount').value,10);
+    startGame({systems:systems, difficulty:diff, aiCount:aiCount, seed:seed});
+  });
+
+  document.getElementById('loadExample').addEventListener('click', ()=>{
+    document.getElementById('systemsRange').value=160; document.getElementById('sysCount').textContent=160;
+    document.getElementById('difficulty').value=1.0; document.getElementById('aiCount').value=4; document.getElementById('aiCountLabel').textContent=4;
+    document.getElementById('seed').value='example-42';
+  });
+
+  document.getElementById('toMenu').addEventListener('click', ()=> stopGame());
+  document.getElementById('buildMine').addEventListener('click', ()=> buildBuildingCommand('mine'));
+  document.getElementById('buildShipyard').addEventListener('click', ()=> buildBuildingCommand('shipyard'));
+  document.getElementById('buildFleet').addEventListener('click', ()=> buildFleetCommand());
+  document.getElementById('sendFleet').addEventListener('click', ()=>{
+    if(G.selectedFleets.length>0){
+      G.sendMode = true;
+      document.getElementById('sendFleet').textContent = 'Click destination';
+    } else alert('Select some fleets by dragging a box over them first.');
+  });
+
+  document.getElementById('zoomSlider').addEventListener('input', (e)=>{ G.view.scale = parseFloat(e.target.value); draw(); });
+
+  // canvas interactions (pan/right-drag, left drag selection)
+  let isRightDown=false, lastX=0,lastY=0; let isLeftDown=false;
+  canvas.addEventListener('mousedown', (ev)=>{
+    const rect = canvas.getBoundingClientRect(); const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    const pos = screenToWorld(sx,sy);
+    if(ev.button===2){ isRightDown=true; lastX=ev.clientX; lastY=ev.clientY; }
+    else if(ev.button===0){ isLeftDown=true; G._selStart = {sx,sy, wx:pos.x, wy:pos.y}; G._selRect = null; draw(); }
+  });
+
+  canvas.addEventListener('mousemove', (ev)=>{
+    const rect = canvas.getBoundingClientRect(); const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    const pos = screenToWorld(sx,sy);
+    if(isRightDown){
+      const dx=(lastX-ev.clientX)/G.view.scale; const dy=(lastY-ev.clientY)/G.view.scale;
+      G.view.x += dx; G.view.y += dy; lastX=ev.clientX; lastY=ev.clientY; draw();
+    }
+    if(isLeftDown && G._selStart){
+      G._selRect = {x0:G._selStart.sx, y0:G._selStart.sy, x1:sx, y1:sy};
+      draw();
+    }
+    detectHover(sx,sy);
+  });
+
+  window.addEventListener('mouseup', (ev)=>{
+    if(ev.button===2) isRightDown=false;
+    if(ev.button===0){
+      if(G._selRect){
+        finalizeSelectionRect(G._selRect);
+        G._selRect=null; G._selStart=null; draw();
+        G._suppressClick = performance.now(); // prevent the click event immediately after a drag
+      }
+      isLeftDown=false;
+    }
+  });
+
+  window.addEventListener('contextmenu', (e)=> e.preventDefault());
+
+  canvas.addEventListener('wheel', (ev)=>{
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect(); const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    const before = screenToWorld(sx,sy);
+    const delta = -ev.deltaY * 0.0015;
+    G.view.scale = clamp(G.view.scale * (1 + delta), 0.25, 2.5);
+    document.getElementById('zoomSlider').value = G.view.scale;
+    const after = screenToWorld(sx,sy);
+    G.view.x += before.x - after.x; G.view.y += before.y - after.y;
+    draw();
+  }, {passive:false});
+
+  // click handling: either send mode or select system
+  canvas.addEventListener('click', (ev)=>{
+    // prevent a click immediately after a drag-selection
+    if(performance.now() - (G._suppressClick || 0) < 200) return;
+
+    const rect = canvas.getBoundingClientRect(); const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+    const pos = screenToWorld(sx,sy);
+
+    if(G.sendMode){
+      let nearest=null, nd=Infinity;
+      for(let s of G.systems){ const d = Math.hypot(s.x-pos.x, s.y-pos.y); if(d<nd){ nd=d; nearest=s; } }
+      if(nearest && nd < 18 / G.view.scale){
+        for(let f of G.selectedFleets.slice()){
+          const path = findPath(f.currentNode, nearest);
+          if(path.length>1) sendFleetAlong(f, path);
+        }
+        G.sendMode=false; document.getElementById('sendFleet').textContent='Send Fleet';
+        G.selectedFleets=[];
+        updateSelectionUI(); draw();
+      } else {
+        alert('No valid destination selected. Click near a system.');
+      }
+      return;
+    }
+
+    // otherwise select a system
+    let nearest=null, nd=Infinity;
+    for(let s of G.systems){ const d = Math.hypot(s.x-pos.x, s.y-pos.y); if(d<nd){ nd=d; nearest=s; } }
+    if(nearest && nd < 18 / G.view.scale){ G.selectedSystem = nearest; G.selectedFleets=[]; updateSelectionUI(); draw(); }
+    else { G.selectedSystem = null; updateSelectionUI(); draw(); }
+  });
+}
+
+/* coordinate transforms */
+function screenToWorld(sx,sy){
+  const originX = G.view.x - (G.canvas.width / 2) / G.view.scale;
+  const originY = G.view.y - (G.canvas.height / 2) / G.view.scale;
+  const x = sx / G.view.scale + originX;
+  const y = sy / G.view.scale + originY;
+  return {x,y};
+}
+function worldToScreen(wx,wy){
+  const originX = G.view.x - (G.canvas.width / 2) / G.view.scale;
+  const originY = G.view.y - (G.canvas.height / 2) / G.view.scale;
+  const sx = ((wx - originX)) * G.view.scale;
+  const sy = ((wy - originY)) * G.view.scale;
+  return {x:sx,y:sy};
+}
+
+/* hover detection */
+function detectHover(sx,sy){
+  const pos = screenToWorld(sx,sy);
+  G.hoverEdge = null; G.hoverNode = null;
+  let best = Infinity;
+  for(let e of G.edges){
+    const d = pointLineDist(pos.x,pos.y, e.a.x,e.a.y, e.b.x,e.b.y);
+    if(d < best){ best = d; G.hoverEdge = e; }
+  }
+  if(best > 30 / G.view.scale) G.hoverEdge = null;
+  for(let s of G.systems){
+    const d = Math.hypot(s.x-pos.x, s.y-pos.y);
+    if(d < 12 / G.view.scale){ G.hoverNode = s; break; }
+  }
+}
+
+/* selection finalize */
+function finalizeSelectionRect(rect){
+  const x0 = Math.min(rect.x0, rect.x1), x1 = Math.max(rect.x0, rect.x1), y0 = Math.min(rect.y0, rect.y1), y1 = Math.max(rect.y0, rect.y1);
+  const p0 = screenToWorld(x0,y0), p1 = screenToWorld(x1,y1);
+  const wx0 = Math.min(p0.x,p1.x), wx1 = Math.max(p0.x,p1.x), wy0 = Math.min(p0.y,p1.y), wy1 = Math.max(p0.y,p1.y);
+  G.selectedFleets = [];
+  for(let f of G.fleets){
+    if(!f.moving && f.owner===1){
+      if(f.pos.x >= wx0 && f.pos.x <= wx1 && f.pos.y >= wy0 && f.pos.y <= wy1) G.selectedFleets.push(f);
+    }
+  }
+  updateSelectionUI();
+}
+
+/* UI updates */
+function updateSelectionUI(){
+  if(G.players[1]){
+    document.getElementById('credits').textContent = G.players[1].credits.toFixed(1);
+    document.getElementById('income').textContent = G.players[1].income.toFixed(1);
+  } else {
+    document.getElementById('credits').textContent = '0.0';
+    document.getElementById('income').textContent = '0.0';
+  }
+  document.getElementById('timeLabel').textContent = Math.floor(G.time) + 's';
+  const sel = G.selectedSystem;
+  if(sel){
+    document.getElementById('selectedName').textContent = sel.name;
+    document.getElementById('selectedOwner').textContent = 'Owner: ' + (sel.owner? (G.players[sel.owner] ? G.players[sel.owner].name : 'Unknown') : 'Neutral');
+    document.getElementById('selectedIncome').textContent = 'Prod: ' + sel.baseProd.toFixed(1) + (sel.buildings.mine? (' + ' + (sel.mineBonus?sel.mineBonus.toFixed(1):'0.0') + ' (mine)') : '') + ', Defense: ' + sel.defense + ', Buildings: ' + (sel.buildings.mine? 'Mine ':'') + (sel.buildings.shipyard? 'Yard':'');
+
+    const q = document.getElementById('buildQueue'); q.innerHTML = '';
+    sel.queue.forEach((t,i)=>{ const el = document.createElement('div'); el.style.marginTop='6px';
+      const pct = t.total ? Math.max(0,Math.min(100,((t.total - t.timeLeft)/t.total*100))) : 0;
+      el.innerHTML = `<div style="font-size:12px">${i+1}. ${t.type} <span style='float:right'>${(t.timeLeft||0).toFixed(1)}s</span></div><div class='progressBar'><div class='progressFill' style='width:${pct}%'></div></div>`;
+      q.appendChild(el);
+    });
+  } else {
+    document.getElementById('selectedName').textContent = 'None';
+    document.getElementById('selectedOwner').textContent = '';
+    document.getElementById('selectedIncome').textContent = '';
+    document.getElementById('buildQueue').innerHTML = '';
+  }
+  document.getElementById('selFleetCount').textContent = G.selectedFleets.length;
+}
+
+/* build commands */
+function buildBuildingCommand(type){
+  const s = G.selectedSystem;
+  if(!s){ alert('Select a system'); return; }
+  if(s.owner !== 1){ alert('You must control the system to build here'); return; }
+  const cost = (type==='mine'?80:120);
+  if(G.players[1].credits < cost){ alert('Not enough credits'); return; }
+  if(type==='mine' && s.buildings.mine){ alert('Mine already present'); return; }
+  if(type==='shipyard' && s.buildings.shipyard){ alert('Shipyard already present'); return; }
+  G.players[1].credits -= cost;
+  s.queue.push({type:type, timeLeft:7, total:7, owner:1});
+  updateSelectionUI();
+}
+function buildFleetCommand(){
+  const s = G.selectedSystem;
+  if(!s || s.owner !== 1){ alert('Select a system you control'); return; }
+  if(!s.buildings.shipyard){ alert('You need a shipyard here to build fleets'); return; }
+  const cost = 100;
+  if(G.players[1].credits < cost){ alert('Not enough credits'); return; }
+  G.players[1].credits -= cost;
+  s.queue.push({type:'fleet', timeLeft:5, total:5, owner:1, strength:1});
+  updateSelectionUI();
+}
+
+/* Pathfinding BFS */
+function findPath(a,b){
+  if(a===b) return [a];
+  const q=[a];
+  const prev=new Map();
+  prev.set(a,null);
+  while(q.length){
+    const cur=q.shift();
+    for(let n of cur.connected){
+      if(prev.has(n)) continue;
+      prev.set(n,cur);
+      if(n===b){
+        const path=[n];
+        let p=cur;
+        while(p){ path.unshift(p); p=prev.get(p); }
+        return path;
+      }
+      q.push(n);
+    }
+  }
+  return [];
+}
+
+/* send fleet */
+function sendFleetAlong(f, path){
+  if(!path || path.length<2) return;
+  f.path = path;
+  if(f.currentNode !== path[0]){ f.currentNode = path[0]; f.pos.x = path[0].x; f.pos.y = path[0].y; }
+  f.pathIndex = 0;
+  f._from = path[0];
+  f._to = path[1];
+  f.moving = true;
+  f.progress = 0;
+}
+
+/* ===== Drawing ===== */
+function draw(){
+  if(!G.ctx || !G.canvas) return;
+  const ctx = G.ctx, canvas = G.canvas;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#041226'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // sectors (hull)
+  for(let sec of G.sectors){
+    if(sec.hull && sec.hull.length>=3){
+      ctx.save();
+      ctx.beginPath();
+      for(let i=0;i<sec.hull.length;i++){
+        const p = sec.hull[i];
+        const s = worldToScreen(p.x,p.y);
+        if(i===0) ctx.moveTo(s.x,s.y); else ctx.lineTo(s.x,s.y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = sec.color;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // edges/starlanes
+  for(let e of G.edges){
+    const sa = worldToScreen(e.a.x,e.a.y), sb = worldToScreen(e.b.x,e.b.y);
+    ctx.beginPath();
+    ctx.lineWidth = Math.max(1, 1.5 * G.view.scale);
+    const owner = laneOwner(e);
+    ctx.strokeStyle = owner===0? 'rgba(160,170,190,0.14)' : owner===1? 'rgba(78,163,255,0.9)' : 'rgba(255,107,107,0.9)';
+    ctx.moveTo(sa.x,sa.y); ctx.lineTo(sb.x,sb.y); ctx.stroke();
+  }
+
+  // hovered edge
+  if(G.hoverEdge){
+    const e = G.hoverEdge;
+    const sa = worldToScreen(e.a.x,e.a.y), sb = worldToScreen(e.b.x,e.b.y);
+    ctx.beginPath(); ctx.moveTo(sa.x,sa.y); ctx.lineTo(sb.x,sb.y);
+    ctx.lineWidth = 4 * G.view.scale; ctx.strokeStyle = 'rgba(255,255,0,0.6)'; ctx.stroke();
+  }
+
+  // systems
+  for(let s of G.systems){
+    const sc = worldToScreen(s.x,s.y);
+    ctx.beginPath();
+    const r = Math.max(3, 6*G.view.scale);
+    const fill = s.owner===0? '#b0b8c6' : (s.owner===1? '#4ea3ff' : '#ff6b6b');
+    ctx.fillStyle = fill;
+    ctx.arc(sc.x, sc.y, r, 0, Math.PI*2); ctx.fill();
+    ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.stroke();
+    ctx.font = `${10*G.view.scale}px sans-serif`;
+    ctx.fillStyle='rgba(220,230,255,0.9)'; ctx.fillText(s.name, sc.x + 8*G.view.scale, sc.y - 6*G.view.scale);
+    if(s.buildings.mine) drawHex(ctx, sc.x - 8*G.view.scale, sc.y + 10*G.view.scale, 6*G.view.scale, '#d0b84a');
+    if(s.buildings.shipyard) drawSquare(ctx, sc.x + 8*G.view.scale, sc.y + 10*G.view.scale, 8*G.view.scale, '#9ad4ff');
+  }
+
+  // sector labels
+  for(let sec of G.sectors){
+    if(sec.systems.length){
+      const avgX = sec.systems.reduce((a,b)=>a+b.x,0)/sec.systems.length;
+      const avgY = sec.systems.reduce((a,b)=>a+b.y,0)/sec.systems.length;
+      const p = worldToScreen(avgX,avgY);
+      ctx.font = `${12*G.view.scale}px sans-serif`; ctx.fillStyle='rgba(200,220,255,0.6)';
+      ctx.fillText(sec.name, p.x-20, p.y-8);
+    }
+  }
+
+  // fleets
+  for(let f of G.fleets){
+    const p = worldToScreen(f.pos.x,f.pos.y);
+    drawTriangle(ctx, p.x, p.y, f);
+    ctx.fillStyle='white'; ctx.font = `${11*G.view.scale}px sans-serif`; ctx.fillText(f.strength, p.x+8, p.y-6);
+  }
+
+  // selection highlight (system)
+  if(G.selectedSystem){
+    const s = G.selectedSystem; const sc = worldToScreen(s.x,s.y);
+    ctx.beginPath(); ctx.arc(sc.x, sc.y, 12*G.view.scale,0,Math.PI*2); ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // selection highlight (fleets)
+  if(G.selectedFleets.length>0){
+    for(let f of G.selectedFleets){
+      const p = worldToScreen(f.pos.x,f.pos.y);
+      ctx.beginPath(); ctx.arc(p.x,p.y,12*G.view.scale,0,Math.PI*2); ctx.strokeStyle='yellow'; ctx.lineWidth=2; ctx.stroke();
+    }
+  }
+
+  // draw selection rect if exists (screen coords)
+  if(G._selRect){
+    const r = G._selRect;
+    const x = Math.min(r.x0, r.x1), y = Math.min(r.y0, r.y1), w = Math.abs(r.x1 - r.x0), h = Math.abs(r.y1 - r.y0);
+    ctx.save();
+    ctx.strokeStyle='rgba(200,200,255,0.9)'; ctx.setLineDash([6,6]); ctx.strokeRect(x,y,w,h);
+    ctx.restore();
+  }
+
+  // minimap
+  drawMinimap();
+}
+
+function drawTriangle(ctx,x,y,f){
+  ctx.save(); ctx.translate(x,y);
+  let angle = 0;
+  if(f.moving && f._from && f._to) angle = Math.atan2(f._to.y - f._from.y, f._to.x - f._from.x);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  const s = 6 * Math.max(1, G.view.scale);
+  ctx.moveTo(s,0); ctx.lineTo(-s*0.7, s*0.7); ctx.lineTo(-s*0.7, -s*0.7); ctx.closePath();
+  ctx.fillStyle = f.owner===1? '#4ea3ff' : '#ff6b6b';
+  ctx.fill(); ctx.restore();
+}
+function drawHex(ctx,x,y,r,color){ ctx.save(); ctx.translate(x,y); ctx.beginPath(); for(let i=0;i<6;i++){ const a = Math.PI/3 * i; const px = Math.cos(a)*r, py = Math.sin(a)*r; if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); } ctx.closePath(); ctx.fillStyle=color; ctx.fill(); ctx.restore(); }
+function drawSquare(ctx,x,y,s,color){ ctx.save(); ctx.beginPath(); ctx.rect(x - s/2, y - s/2, s, s); ctx.fillStyle=color; ctx.fill(); ctx.restore(); }
+
+function laneOwner(edge){
+  if(edge.a.owner===edge.b.owner) return edge.a.owner || 0;
+  if(edge.a.owner===1 || edge.b.owner===1) return 1;
+  for(let pid in G.players){
+    const ip = Number(pid);
+    if(ip>1 && (edge.a.owner===ip || edge.b.owner===ip)) return ip;
+  }
+  return 0;
+}
+
+function drawMinimap(){
+  if(!G.minimapCtx) return;
+  const ctx = G.minimapCtx; const w=200, h=120; ctx.clearRect(0,0,w,h);
+  ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(0,0,w,h);
+  const fx = w / G.width, fy = h / G.height;
+  ctx.lineWidth=1;
+  for(let e of G.edges){ ctx.beginPath(); ctx.moveTo(e.a.x*fx, e.a.y*fy); ctx.lineTo(e.b.x*fx, e.b.y*fy); ctx.strokeStyle='rgba(200,200,220,0.12)'; ctx.stroke(); }
+  for(let s of G.systems){ ctx.fillStyle = s.owner===1? '#4ea3ff' : s.owner>1? '#ff6b6b' : '#b0b8c6'; ctx.fillRect(s.x*fx - 1, s.y*fy -1, 2,2); }
+  const vx = (G.view.x - (G.canvas.width / 2) / G.view.scale) * fx;
+  const vy = (G.view.y - (G.canvas.height / 2) / G.view.scale) * fy;
+  const vw = (G.canvas.width / G.view.scale) * fx;
+  const vh = (G.canvas.height / G.view.scale) * fy;
+  ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.strokeRect(vx,vy,vw,vh);
+}
+
+/* ===== Win conditions ===== */
+function checkWinConditions(){
+  const otherSystems = G.systems.filter(s=>s.owner && s.owner !== 1).length;
+  const otherFleets = G.fleets.filter(f=>f.owner !== 1).length;
+  const playerSystems = G.systems.filter(s=>s.owner===1).length;
+  const playerFleets = G.fleets.filter(f=>f.owner===1).length;
+  if(otherSystems===0 && otherFleets===0){
+    setTimeout(()=>{ alert('You Win!'); stopGame(); }, 10);
+  }
+  if(playerSystems===0 && playerFleets===0){
+    setTimeout(()=>{ alert('AI Wins!'); stopGame(); }, 10);
+  }
+}
+
+/* ===== Start / Stop ===== */
+let rafId=null, lastTime=performance.now();
+function startGame(settings){
+  G.settings = settings;
+  generateGalaxy(settings);
+  document.getElementById('menu').style.display='none';
+  document.getElementById('topBar').style.display='flex';
+  document.getElementById('hud').style.display='block';
+  document.getElementById('footer').style.display='block';
+  document.getElementById('statusText').textContent = 'Running — Seed: ' + (G.seed||'random');
+
+  for(let pid in G.players){ if(G.players[pid].isAI){ G.players[pid].credits = 300 * settings.difficulty; G.players[pid].difficulty = settings.difficulty; } }
+
+  const pStart = G.systems.find(s=>s.owner===1); if(pStart) G.fleets.push(new Fleet(G.nextFleetId++,1,3,pStart));
+  for(let pid in G.players){ if(G.players[pid].isAI){ const s = G.systems.find(x=>x.owner==pid); if(s) G.fleets.push(new Fleet(G.nextFleetId++, parseInt(pid), Math.max(1,2 + Math.floor(Math.random()*3)), s)); } }
+
+  G.running = true; lastTime = performance.now();
+  function loop(t){
+    const dt = Math.min(0.1, (t - lastTime)/1000);
+    lastTime = t;
+    tick(dt);
+    rafId = requestAnimationFrame(loop);
+  }
+  rafId = requestAnimationFrame(loop);
+}
+
+function stopGame(){
+  G.running = false; if(rafId) cancelAnimationFrame(rafId);
+  document.getElementById('menu').style.display='block';
+  document.getElementById('topBar').style.display='none';
+  document.getElementById('hud').style.display='none';
+  document.getElementById('footer').style.display='none';
+}
+
+/* ===== Init ===== */
+setupUI();
+G.settings.systems = 120; G.settings.aiCount = 3; G.settings.difficulty = 1.0;
+generateGalaxy(G.settings);
+draw();
+
+</script>
+</body>
+</html>
