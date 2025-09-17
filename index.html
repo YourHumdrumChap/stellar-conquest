@@ -278,16 +278,23 @@ function getPlayerColor(pid, kind){
     // player colors (blue)
     if(kind==='lane') return 'hsl(206 80% 60% / 0.9)';
     if(kind==='minimap') return '#4ea3ff';
+    if(kind==='fleet') return 'hsl(206 85% 60%)'; // slightly brighter/more saturated for fleets
     return '#4ea3ff';
   }
   const hue = G.playerHue[pid] !== undefined ? G.playerHue[pid] : ((pid-2)*137.508)%360;
   // tuning lightness per kind so visuals are pleasant
   let l = 55, a = 1.0, sat=70;
   if(kind === 'system') l = 50;
-  if(kind === 'fleet') l = 55;
+  if(kind === 'fleet') { l = 60; sat = 82; } // fleets slightly lighter and more saturated
   if(kind === 'lane') { l = 50; a = 0.9; }
   if(kind === 'minimap') { l = 55; a = 1.0; }
   // use modern hsl with optional alpha
+  // For fleets, apply a small hue shift so they contrast with systems of the same owner
+  if(kind === 'fleet'){
+    const fleetHue = (hue + 8) % 360; // small hue offset
+    if(a === 1) return `hsl(${fleetHue} ${sat}% ${l}%)`;
+    return `hsl(${fleetHue} ${sat}% ${l}% / ${a})`;
+  }
   if(a === 1) return `hsl(${hue} ${sat}% ${l}%)`;
   return `hsl(${hue} ${sat}% ${l}% / ${a})`;
 }
@@ -735,41 +742,55 @@ function aiTick(dt){
     const mySystems = G.systems.filter(s => s.owner == pid);
     const myFleets = G.fleets.filter(f => f.owner == pid);
 
+    // Count currently active AI 'tasks' so we can limit starting new ones
+    // Active tasks include queued builds and fleets already moving toward hostile targets
+    const queuedTasks = mySystems.reduce((acc,s)=> acc + (s.queue ? s.queue.length : 0), 0);
+    const movingAttackFleets = G.fleets.filter(f => f.owner == pid && f.moving && f.path && f.path.some(n => n.owner != pid)).length;
+    let active = queuedTasks + movingAttackFleets;
+
+    // Allowed concurrent tasks scales with difficulty but is at least 1.
+    // Use a small random chance to allow +1 task to introduce tiny variation.
+    let allowed = Math.max(1, Math.round(p.difficulty || 1));
+    if(G.rng() < 0.12) allowed += 1; // occasional extra burst
+    allowed = Math.min(3, allowed); // cap at a sensible max
+
     // --- Building decisions ---
     // Prioritize a shipyard on a high-production system if none exists
-    if(G.rng() < 0.35 && p.credits >= 300){
+    if(active < allowed && G.rng() < 0.35 && p.credits >= 300){
       const candidates = mySystems.filter(s => !s.buildings.shipyard && s.queue.filter(q=>q.type==='shipyard').length===0);
       candidates.sort((a,b) => (b.baseProd || 0) - (a.baseProd || 0));
-      if(candidates.length){ const s = candidates[0]; p.credits -= 300; s.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid}); }
+      if(candidates.length){ const s = candidates[0]; p.credits -= 300; s.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid}); active++; }
     }
 
     // Build mines opportunistically on high-production systems (but respect cap 3 including queued)
-    if(G.rng() < 0.6){
+    if(active < allowed && G.rng() < 0.6){
       const sysByProd = mySystems.slice().sort((a,b)=> (b.baseProd||0) - (a.baseProd||0));
       for(const s of sysByProd){
         const built = s.mines || 0;
         const queued = s.queue.filter(q=>q.type==='mine').length;
-        if(built + queued < 3 && p.credits >= 100 && G.rng() < 0.5){ p.credits -= 100; s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid}); break; }
+        if(built + queued < 3 && p.credits >= 100 && G.rng() < 0.5){ p.credits -= 100; s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid}); active++; break; }
       }
     }
 
     // Build fleets: scale rate with difficulty and available shipyards
     const shipyards = mySystems.filter(s => s.buildings.shipyard || s.queue.some(q=>q.type==='shipyard'));
     for(const s of shipyards){
+      if(active >= allowed) break;
       // choose whether to queue a fleet now
       if(p.credits >= 150 && G.rng() < 0.7){
         const strength = Math.max(1, Math.round(G.rng()*2 + (p.difficulty || 1)));
         p.credits -= 150;
         s.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength});
+        active++;
       }
     }
 
     // Occasionally build an outpost if system is valuable
-    if(G.rng() < 0.08){
+    if(active < allowed && G.rng() < 0.08){
       for(const s of mySystems.slice().sort((a,b)=> (b.baseProd||0) - (a.baseProd||0))){
         const built = s.buildings.outposts || 0;
         const queued = s.queue.filter(q=>q.type==='outpost').length;
-        if(built + queued < 2 && p.credits >= 2500){ p.credits -= 2500; s.queue.push({type:'outpost', timeLeft:45, total:45, owner:pid}); break; }
+        if(built + queued < 2 && p.credits >= 2500){ p.credits -= 2500; s.queue.push({type:'outpost', timeLeft:45, total:45, owner:pid}); active++; break; }
       }
     }
 
@@ -801,8 +822,9 @@ function aiTick(dt){
       // send one or more of the stronger fleets along the path; merging logic will combine them at nodes
       const sendCount = Math.min(fleetsAtNode.length, Math.max(1, Math.floor(fleetsAtNode.length / 2)));
       for(let i=0;i<sendCount;i++){
+        if(active >= allowed) break; // don't exceed allowed concurrent tasks
         const f = fleetsAtNode[i];
-        if(!f.moving) sendFleetAlong(f, builtPath);
+        if(!f.moving){ sendFleetAlong(f, builtPath); active++; }
       }
     }
   }
@@ -984,6 +1006,16 @@ function setupUI(){
       return;
     }
 
+    // First, check if the player clicked near a fleet (moving or idle). Prefer selecting fleets over systems.
+    let nearestFleet = null, fd = Infinity;
+    for(let f of G.fleets){ if(f.owner !== 1) continue; const d = Math.hypot(f.pos.x - pos.x, f.pos.y - pos.y); if(d < fd){ fd = d; nearestFleet = f; } }
+    const fleetClickThreshold = 14 / G.view.scale;
+    if(nearestFleet && fd < fleetClickThreshold){
+      // select the fleet (single selection)
+      G.selectedFleets = [nearestFleet]; G.selectedSystem = null; updateSelectionUI(); draw();
+      return;
+    }
+
     // otherwise select a system
     let nearest=null, nd=Infinity;
     for(let s of G.systems){ const d = Math.hypot(s.x-pos.x, s.y-pos.y); if(d<nd){ nd=d; nearest=s; } }
@@ -1030,8 +1062,9 @@ function finalizeSelectionRect(rect){
   const p0 = screenToWorld(x0,y0), p1 = screenToWorld(x1,y1);
   const wx0 = Math.min(p0.x,p1.x), wx1 = Math.max(p0.x,p1.x), wy0 = Math.min(p0.y,p1.y), wy1 = Math.max(p0.y,p1.y);
   G.selectedFleets = [];
+  // include both idle and moving player fleets so the user can select fleets in transit
   for(let f of G.fleets){
-    if(!f.moving && f.owner===1){
+    if(f.owner===1){
       if(f.pos.x >= wx0 && f.pos.x <= wx1 && f.pos.y >= wy0 && f.pos.y <= wy1) G.selectedFleets.push(f);
     }
   }
@@ -1343,35 +1376,41 @@ function draw(){
   for(let s of G.systems){
     const sc = worldToScreen(s.x,s.y);
     ctx.beginPath();
-    const r = Math.max(3, 6*G.view.scale);
+    // compute radius from production (include mine bonuses); scale with view
+    const prod = (s.baseProd || 0) + (s.mines ? s.mineBonus || 0 : 0);
+    // radius base and scaling: make small systems still visible but larger ones noticeably bigger
+    const baseR = 4; // world units
+    const scaleR = 4; // multiplier for production influence
+    const rWorld = Math.max(3, baseR + scaleR * Math.sqrt(prod));
+    const r = rWorld * G.view.scale;
     const fill = s.owner===0? '#b0b8c6' : getPlayerColor(s.owner,'system');
     ctx.fillStyle = fill;
     ctx.arc(sc.x, sc.y, r, 0, Math.PI*2); ctx.fill();
     ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.stroke();
-    ctx.font = `${10*G.view.scale}px sans-serif`;
-    ctx.fillStyle='rgba(220,230,255,0.9)'; ctx.fillText(s.name, sc.x + 8*G.view.scale, sc.y - 6*G.view.scale);
+    ctx.font = `${Math.max(10, 10*G.view.scale)}px sans-serif`;
+    ctx.fillStyle='rgba(220,230,255,0.9)'; ctx.fillText(s.name, sc.x + (r + 6), sc.y - (r - 4));
 
-    // draw mines (multiple)
+    // draw mines (multiple) — position relative to radius
     if(s.mines){
       for(let i=0;i<s.mines;i++){
         const offset = (i - (s.mines-1)/2) * (10 * G.view.scale);
-        drawHex(ctx, sc.x + offset, sc.y + 10*G.view.scale, 5*G.view.scale, '#d0b84a');
+        drawHex(ctx, sc.x + offset, sc.y + (r + 6), 5*G.view.scale, '#d0b84a');
       }
     }
-    // draw shipyard
-    if(s.buildings.shipyard) drawSquare(ctx, sc.x + 8*G.view.scale, sc.y + 10*G.view.scale, 8*G.view.scale, '#9ad4ff');
+    // draw shipyard near bottom-right of the system circle
+    if(s.buildings.shipyard) drawSquare(ctx, sc.x + (r - 1), sc.y + (r + 6), Math.max(6, 8*G.view.scale), '#9ad4ff');
 
-    // draw outposts as stars
+    // draw outposts as stars above the system, spaced by radius
     if(s.buildings.outposts){
       for(let i=0;i<s.buildings.outposts;i++){
         const offset = (i - (s.buildings.outposts-1)/2) * (10 * G.view.scale);
-        drawStar(ctx, sc.x + offset, sc.y - 12*G.view.scale, 5*G.view.scale, '#ffd700');
+        drawStar(ctx, sc.x + offset, sc.y - (r + 8), 5*G.view.scale, '#ffd700');
       }
     }
 
-    // optionally draw defense number
-    ctx.fillStyle='rgba(200,230,255,0.85)'; ctx.font = `${9*G.view.scale}px sans-serif`;
-    ctx.fillText(s.defense, sc.x - 6*G.view.scale, sc.y + 4*G.view.scale);
+    // optionally draw defense number, positioned under the system
+    ctx.fillStyle='rgba(200,230,255,0.85)'; ctx.font = `${Math.max(9, 9*G.view.scale)}px sans-serif`;
+    ctx.fillText(s.defense, sc.x - (r * 0.5), sc.y + (r + 4));
   }
 
   // sector labels
@@ -1424,11 +1463,20 @@ function drawTriangle(ctx,x,y,f){
   let angle = 0;
   if(f.moving && f._from && f._to) angle = Math.atan2(f._to.y - f._from.y, f._to.x - f._from.x);
   ctx.rotate(angle);
-  ctx.beginPath();
   const s = 6 * Math.max(1, G.view.scale);
-  ctx.moveTo(s,0); ctx.lineTo(-s*0.7, s*0.7); ctx.lineTo(-s*0.7, -s*0.7); ctx.closePath();
-  ctx.fillStyle = getPlayerColor(f.owner,'fleet');
-  ctx.fill(); ctx.restore();
+  // draw outline for contrast
+  ctx.beginPath(); ctx.moveTo(s,0); ctx.lineTo(-s*0.7, s*0.7); ctx.lineTo(-s*0.7, -s*0.7); ctx.closePath();
+  // choose outline color based on fleet color lightness: dark outline for light colors, light outline for dark colors
+  const fleetColor = getPlayerColor(f.owner,'fleet');
+  // crude luminance estimate from HSL lightness used earlier; if lightness >= 55 use dark outline
+  const useDarkOutline = true; // prefer dark outline for most colors for readability
+  ctx.lineWidth = Math.max(1.5, 2 * G.view.scale);
+  ctx.strokeStyle = useDarkOutline ? 'rgba(6,10,18,0.85)' : 'rgba(255,255,255,0.9)';
+  ctx.stroke();
+  // fill the triangle
+  ctx.fillStyle = fleetColor;
+  ctx.fill();
+  ctx.restore();
 }
 function drawHex(ctx,x,y,r,color){ ctx.save(); ctx.translate(x,y); ctx.beginPath(); for(let i=0;i<6;i++){ const a = Math.PI/3 * i; const px = Math.cos(a)*r, py = Math.sin(a)*r; if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); } ctx.closePath(); ctx.fillStyle=color; ctx.fill(); ctx.restore(); }
 function drawStar(ctx,x,y,r,color){
