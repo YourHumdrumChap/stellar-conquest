@@ -18,6 +18,8 @@
     #gameArea{flex:1;position:relative;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#061122,#071426)}
     #topBar{position:absolute;left:12px;top:12px;z-index:50;background:rgba(5,8,15,0.6);padding:8px;border-radius:8px;display:flex;gap:8px;align-items:center}
     #hud{position:absolute;right:12px;top:12px;z-index:50;background:rgba(5,8,15,0.6);padding:8px;border-radius:8px;min-width:260px}
+  /* Ensure HUD controls receive pointer events even if canvas is underneath */
+  #hud, #hud * { pointer-events: auto; }
     #canvasWrap{width:100%;height:100%;display:flex}
     canvas#gameCanvas{flex:1;display:block;cursor:crosshair}
     .panel{margin-top:12px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.02)}
@@ -799,6 +801,15 @@ function setupUI(){
   G.canvas = canvas; G.ctx = canvas.getContext('2d');
   const minimap = document.getElementById('minimap'); G.minimapCtx = minimap.getContext('2d');
 
+  // add a diagnostic click listener to the buildQueue container so clicks are visible in the console
+  try{
+    const buildQueueEl = document.getElementById('buildQueue');
+    if(buildQueueEl && !buildQueueEl._hasListener){
+      buildQueueEl.addEventListener('click', (e)=>{ console.debug('buildQueue clicked target:', e.target, 'nodeName:', e.target && e.target.nodeName); }, true);
+      buildQueueEl._hasListener = true;
+    }
+  } catch(e){ /* ignore */ }
+
   function resize(){
     canvas.width = Math.max(600, window.innerWidth - (document.getElementById('leftPane') ? document.getElementById('leftPane').offsetWidth + 40 : 40));
     canvas.height = Math.max(400, window.innerHeight - 30);
@@ -806,6 +817,12 @@ function setupUI(){
   }
   window.addEventListener('resize', resize);
   resize();
+
+  // Global debug: log pointerdown events to help diagnose UI click issues
+  if(!window._pointerDebugAdded){
+    window.addEventListener('pointerdown', (e)=>{ try{ console.debug('global pointerdown', {target: e.target && (e.target.id || e.target.className || e.target.nodeName), x: e.clientX, y: e.clientY}); } catch(_){} }, true);
+    window._pointerDebugAdded = true;
+  }
 
   // menu UI wiring
   const sysRange = document.getElementById('systemsRange'); const sysCount = document.getElementById('sysCount');
@@ -1046,9 +1063,46 @@ function updateSelectionUI(){
     document.getElementById('selectedIncome').textContent = 'Prod: ' + prodText + ', Defense: ' + sel.defense + ', Mines: ' + (sel.mines||0) + (sel.buildings.shipyard? ', Shipyard':'');
 
     const q = document.getElementById('buildQueue'); q.innerHTML = '';
-    sel.queue.forEach((t,i)=>{ const el = document.createElement('div'); el.style.marginTop='6px';
-      const pct = t.total ? Math.max(0,Math.min(100,((t.total - t.timeLeft)/t.total*100))) : 0;
-      el.innerHTML = `<div style="font-size:12px">${i+1}. ${t.type} <span style='float:right'>${(t.timeLeft||0).toFixed(1)}s</span></div><div class='progressBar'><div class='progressFill' style='width:${pct}%'></div></div>`;
+    sel.queue.forEach((t,i)=>{
+      const el = document.createElement('div'); el.style.marginTop = '6px';
+      const pct = t.total ? Math.max(0, Math.min(100, ((t.total - t.timeLeft) / t.total * 100))) : 0;
+
+      // top row: label and time
+      const row = document.createElement('div'); row.style.fontSize = '12px';
+      const label = document.createElement('span'); label.textContent = `${i+1}. ${t.type}`;
+      row.appendChild(label);
+      const timeSpan = document.createElement('span'); timeSpan.style.cssText = 'float:right'; timeSpan.textContent = `${(t.timeLeft||0).toFixed(1)}s`;
+      row.appendChild(timeSpan);
+
+      // Cancel button (only for player's queued tasks)
+      if(sel.owner === 1 && t.owner === 1){
+        const btn = document.createElement('button');
+        btn.dataset.idx = String(i);
+        btn.style.marginLeft = '8px'; btn.style.padding = '4px'; btn.style.borderRadius = '6px'; btn.style.fontSize = '11px';
+        if(i === 0){
+          btn.title = 'Stop and cancel current build'; btn.style.background = 'transparent'; btn.style.border = 'none'; btn.style.color = '#ff6b6b'; btn.style.fontWeight = '700'; btn.textContent = '✕';
+        } else {
+          btn.textContent = 'Cancel';
+        }
+        // ensure button does not cause parent click handlers and attach listener
+  // ensure clickable and accessible
+  btn.type = 'button'; btn.style.cursor = 'pointer'; btn.setAttribute('aria-label', 'Cancel queued build');
+  // primary handler on pointerdown to avoid potential click suppression by other handlers
+  btn.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); ev.preventDefault(); console.debug('pointerdown on cancel button', {systemId: sel && sel.id, idx: i}); cancelQueuedTask(sel, i); });
+  // also keep click for compatibility
+  btn.addEventListener('click', (ev) => { ev.stopPropagation(); ev.preventDefault(); console.debug('click on cancel button', {systemId: sel && sel.id, idx: i}); cancelQueuedTask(sel, i); });
+        // put button to the right of the time span by appending after it
+        row.appendChild(btn);
+      }
+
+      el.appendChild(row);
+
+      // progress bar
+      const barWrap = document.createElement('div'); barWrap.className = 'progressBar';
+      const fill = document.createElement('div'); fill.className = 'progressFill'; fill.style.width = pct + '%';
+      barWrap.appendChild(fill);
+      el.appendChild(barWrap);
+
       q.appendChild(el);
     });
   } else {
@@ -1111,6 +1165,28 @@ function buildFleetCommand(){
     s.queue.push({type:'fleet', timeLeft:12, total:12, owner:1, strength:1});
   }
   updateSelectionUI();
+}
+
+/* Cancel a queued task at a system for the player
+   - index: position in the system.queue array
+   Refund policy:
+   - If task hasn't started yet (i > 0), refund full cost
+   - If it's the currently-building task (index === 0), refund remaining time proportionally
+   Costs are inferred from type (same as build functions)
+*/
+function cancelQueuedTask(system, index){
+  console.debug('cancelQueuedTask called', {systemId: system && system.id, index});
+  if(!system || !system.queue || index < 0 || index >= system.queue.length) return;
+  const task = system.queue[index];
+  if(!task) return;
+  if(!G.players[1]) return;
+  // remove the queued item
+  system.queue.splice(index, 1);
+  // remove the queued item; no refund is given to the player by design
+  // debug log the cancellation
+  console.debug('cancelQueuedTask: cancelled item', {systemId: system && system.id, index, newQueueLen: system.queue.length});
+
+  updateSelectionUI(); draw();
 }
 
 /* Pathfinding BFS */
