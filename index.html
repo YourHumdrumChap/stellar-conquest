@@ -717,29 +717,89 @@ function removeFleet(f){
 
 /* ===== AI ===== */
 function aiTick(dt){
+  // More elaborate AI: smarter building choices, adaptive fleet production, and coordinated attacks
   if(!G._aiTimers) G._aiTimers = {};
   for(let pid in G.players){
     const p = G.players[pid];
     if(!p.isAI) continue;
     if(!G._aiTimers[pid]) G._aiTimers[pid] = 0;
     G._aiTimers[pid] += dt;
-    const think = clamp(1.0 / p.difficulty, 0.2, 3.0);
+    // AI think frequency scales with difficulty
+    const think = clamp(1.0 / (p.difficulty || 1.0), 0.25, 3.0);
     if(G._aiTimers[pid] < think) continue;
     G._aiTimers[pid] = 0;
-    const mySystems = G.systems.filter(s=>s.owner==pid);
-    // occasionally build shipyard
-    if(G.rng() < 0.25){
-      for(let s of mySystems){ if(!s.buildings.shipyard && p.credits >= 300){ p.credits -= 300; s.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid}); break; } }
+
+    const mySystems = G.systems.filter(s => s.owner == pid);
+    const myFleets = G.fleets.filter(f => f.owner == pid);
+
+    // --- Building decisions ---
+    // Prioritize a shipyard on a high-production system if none exists
+    if(G.rng() < 0.35 && p.credits >= 300){
+      const candidates = mySystems.filter(s => !s.buildings.shipyard && s.queue.filter(q=>q.type==='shipyard').length===0);
+      candidates.sort((a,b) => (b.baseProd || 0) - (a.baseProd || 0));
+      if(candidates.length){ const s = candidates[0]; p.credits -= 300; s.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid}); }
     }
-    // build fleets if shipyard present
-    for(let s of mySystems){ if(s.buildings.shipyard && p.credits >= 150 && G.rng() < 0.6){ p.credits -= 100; s.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength: Math.max(1,Math.round(G.rng()*3 + p.difficulty))}); break; } }
-    // move idle fleets
-    const idleFleets = G.fleets.filter(f=>f.owner==pid && !f.moving);
-    for(let f of idleFleets){
-      const target = findNearestTarget(f.currentNode, pid);
-      if(target){
-        const path = findPath(f.currentNode, target);
-        if(path.length>1){ sendFleetAlong(f,path); break; }
+
+    // Build mines opportunistically on high-production systems (but respect cap 3 including queued)
+    if(G.rng() < 0.6){
+      const sysByProd = mySystems.slice().sort((a,b)=> (b.baseProd||0) - (a.baseProd||0));
+      for(const s of sysByProd){
+        const built = s.mines || 0;
+        const queued = s.queue.filter(q=>q.type==='mine').length;
+        if(built + queued < 3 && p.credits >= 100 && G.rng() < 0.5){ p.credits -= 100; s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid}); break; }
+      }
+    }
+
+    // Build fleets: scale rate with difficulty and available shipyards
+    const shipyards = mySystems.filter(s => s.buildings.shipyard || s.queue.some(q=>q.type==='shipyard'));
+    for(const s of shipyards){
+      // choose whether to queue a fleet now
+      if(p.credits >= 150 && G.rng() < 0.7){
+        const strength = Math.max(1, Math.round(G.rng()*2 + (p.difficulty || 1)));
+        p.credits -= 150;
+        s.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength});
+      }
+    }
+
+    // Occasionally build an outpost if system is valuable
+    if(G.rng() < 0.08){
+      for(const s of mySystems.slice().sort((a,b)=> (b.baseProd||0) - (a.baseProd||0))){
+        const built = s.buildings.outposts || 0;
+        const queued = s.queue.filter(q=>q.type==='outpost').length;
+        if(built + queued < 2 && p.credits >= 2500){ p.credits -= 2500; s.queue.push({type:'outpost', timeLeft:45, total:45, owner:pid}); break; }
+      }
+    }
+
+    // --- Movement and combat decisions ---
+    // Group idle fleets at their nodes and perform coordinated attacks toward weak nearby lines
+    const idleFleets = myFleets.filter(f => !f.moving && f.currentNode);
+    const groups = new Map();
+    for(const f of idleFleets){
+      const key = f.currentNode.id;
+      if(!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(f);
+    }
+
+    for(const [nodeId, fleetsAtNode] of groups.entries()){
+      if(fleetsAtNode.length === 0) continue;
+      // choose the strongest ship as leader for path planning
+      fleetsAtNode.sort((a,b)=> b.strength - a.strength);
+      const leader = fleetsAtNode[0];
+      // find a weak/close offensive line using existing helper
+      const includeNeutral = true, includeAI = true;
+      const path = findWeakestClosestLine(leader.currentNode, pid, includeNeutral, includeAI);
+      if(!path || path.length <= 1) continue;
+      // Simulate combined strength for planning (leader + nearest few allies)
+      let combined = fleetsAtNode.reduce((s,f)=> s + f.strength, 0);
+      // Respect suicidal policy: let AI be willing to take some risk depending on difficulty
+      const stopIfSuicidal = !(p.difficulty > 1.5 && G.rng() < 0.4);
+      const builtPath = buildAutoCapturePath(path, Math.max(1, Math.round(leader.strength)), pid, stopIfSuicidal);
+      if(!builtPath || builtPath.length <= 1) continue;
+      // send one or more of the stronger fleets along the path; merging logic will combine them at nodes
+      const sendCount = Math.min(fleetsAtNode.length, Math.max(1, Math.floor(fleetsAtNode.length / 2)));
+      for(let i=0;i<sendCount;i++){
+        const f = fleetsAtNode[i];
+        if(!f.moving) sendFleetAlong(f, builtPath);
       }
     }
   }
