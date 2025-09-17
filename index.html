@@ -34,6 +34,13 @@
     .progressBar{height:8px;background:rgba(255,255,255,0.06);border-radius:6px;overflow:hidden}
     .progressFill{height:100%;background:linear-gradient(90deg,var(--accent),#2ec4ff);width:0%}
     @media (max-width:900px){#leftPane{display:none}}
+    /* Leaderboard styles */
+    #leaderboardPanel{box-shadow:0 10px 30px rgba(0,0,0,0.6);border-radius:10px;padding:10px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));width:320px}
+    #leaderboardPanel .lb-tabs{display:flex;gap:6px}
+    #leaderboardPanel .lb-tab.active{background:linear-gradient(90deg,var(--accent),#2ec4ff);color:#021022}
+    #leaderboardPanel .lb-list{margin-top:8px;max-height:48vh;overflow:auto}
+    #leaderboardPanel .lb-row{display:flex;justify-content:space-between;padding:6px;border-bottom:1px solid rgba(255,255,255,0.02);font-size:13px}
+    #lbToggleBtn{position:fixed;right:18px;bottom:18px;z-index:121;background:linear-gradient(90deg,#ffd36b,#ff9f6b);color:#021022;padding:8px;border-radius:10px;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,0.5)}
   </style>
 </head>
 <body>
@@ -238,6 +245,13 @@ const G = {
   _selRect:null, _selStart:null, _suppressClick:0,
   playerHue: {} // will hold hue per player id (AI)
 };
+
+// Decluttering thresholds: when the view scale is below these values
+// certain visual details will be hidden to reduce clutter and improve readability
+// - labelsAt: system & sector labels
+// - detailsAt: small decorations like mines/shipyards/outposts and system defense numbers
+// - fleetLabelsAt: fleet strength text
+G.declutter = { labelsAt: 0.8, detailsAt: 0.6, fleetLabelsAt: 0.75 };
 
 function resetGame(){
   G.systems=[]; G.sectors=[]; G.fleets=[]; G.edges=[]; G.players={}; G.nextFleetId=1; G.nextSystemId=1; G.time=0;
