@@ -74,6 +74,7 @@
 
         <div style="margin-top:12px;display:flex;gap:8px">
           <button id="launchBtn" class="primary">Launch</button>
+          <button id="spectateBtn">Spectate AI Game</button>
           <button id="loadExample">Example</button>
         </div>
 
@@ -839,6 +840,18 @@ function setupUI(){
     startGame({systems:systems, difficulty:diff, aiCount:aiCount, seed:seed});
   });
 
+  // Spectate AI-only game: launches with the human player as neutral/spectator
+  const spectateBtn = document.getElementById('spectateBtn');
+  if(spectateBtn){
+    spectateBtn.addEventListener('click', ()=>{
+      const diff = parseFloat(document.getElementById('difficulty').value);
+      const systems = parseInt(document.getElementById('systemsRange').value,10);
+      const seed = document.getElementById('seed').value.trim() || null;
+      const aiCount = parseInt(document.getElementById('aiCount').value,10);
+      startSpectate({systems:systems, difficulty:diff, aiCount:aiCount, seed:seed});
+    });
+  }
+
   document.getElementById('loadExample').addEventListener('click', ()=>{
     document.getElementById('systemsRange').value=160; document.getElementById('sysCount').textContent=160;
     document.getElementById('difficulty').value=1.0; document.getElementById('aiCount').value=4; document.getElementById('aiCountLabel').textContent=4;
@@ -1386,8 +1399,39 @@ function draw(){
     ctx.fillStyle = fill;
     ctx.arc(sc.x, sc.y, r, 0, Math.PI*2); ctx.fill();
     ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.stroke();
+    // Label decluttering: only draw many labels when zoomed in enough; always draw for selected/hovered
+    // Collision avoidance: don't draw labels that overlap previously drawn labels
+    const LABEL_SYSTEM_MIN_SCALE = 0.6; // below this, most system labels are hidden
+    const LABEL_FLEET_MIN_SCALE = 0.85; // fleet strength numbers hidden below this
+    const LABEL_SECTOR_MIN_SCALE = 0.7; // sector labels hidden below this
+    // Prepare collision tracking array on ctx (keeps screen-space rects)
+    if(!ctx._labelRects) ctx._labelRects = [];
+    // helper to test overlap and register
+    function rectsOverlap(a,b){ return !(a.x+b.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h); }
+    function canPlaceLabel(x,y,w,h){
+      const rect = {x: x, y: y, w: w, h: h};
+      for(const rct of ctx._labelRects){ if(rectsOverlap(rect, rct)) return false; }
+      ctx._labelRects.push(rect); return true;
+    }
+
+    // draw system name: prefer selected/hovered always
     ctx.font = `${Math.max(10, 10*G.view.scale)}px sans-serif`;
-    ctx.fillStyle='rgba(220,230,255,0.9)'; ctx.fillText(s.name, sc.x + (r + 6), sc.y - (r - 4));
+    const labelX = sc.x + (r + 6);
+    const labelY = sc.y - (r - 4);
+    const isImportant = (G.selectedSystem === s) || (G.hoverNode === s);
+    const showSystemLabel = isImportant || G.view.scale >= LABEL_SYSTEM_MIN_SCALE;
+    if(showSystemLabel){
+      // measure and avoid collisions at smaller scales
+      const metrics = ctx.measureText(s.name);
+      const textW = metrics.width + 6;
+      const textH = Math.max(12, 10 * G.view.scale) + 4;
+      // when zoomed out a bit, reduce opacity
+      const alpha = isImportant ? 0.98 : clamp((G.view.scale - 0.35) / (1.0 - 0.35), 0.2, 0.98);
+      if(isImportant || canPlaceLabel(labelX, labelY - textH, textW, textH)){
+        ctx.fillStyle = `rgba(220,230,255,${alpha})`;
+        ctx.fillText(s.name, labelX, labelY);
+      }
+    }
 
     // draw mines (multiple) — position relative to radius
     if(s.mines){
@@ -1407,9 +1451,11 @@ function draw(){
       }
     }
 
-    // optionally draw defense number, positioned under the system
-    ctx.fillStyle='rgba(200,230,255,0.85)'; ctx.font = `${Math.max(9, 9*G.view.scale)}px sans-serif`;
-    ctx.fillText(s.defense, sc.x - (r * 0.5), sc.y + (r + 4));
+    // optionally draw defense number, positioned under the system — show when zoomed in or selected/hovered
+    const DEFENSE_MIN_SCALE = 0.7;
+    ctx.font = `${Math.max(9, 9*G.view.scale)}px sans-serif`;
+    const showDefense = isImportant || G.view.scale >= DEFENSE_MIN_SCALE;
+    if(showDefense){ ctx.fillStyle='rgba(200,230,255,0.85)'; ctx.fillText(s.defense, sc.x - (r * 0.5), sc.y + (r + 4)); }
   }
 
   // sector labels
@@ -1418,8 +1464,16 @@ function draw(){
       const avgX = sec.systems.reduce((a,b)=>a+b.x,0)/sec.systems.length;
       const avgY = sec.systems.reduce((a,b)=>a+b.y,0)/sec.systems.length;
       const p = worldToScreen(avgX,avgY);
-      ctx.font = `${12*G.view.scale}px sans-serif`; ctx.fillStyle='rgba(200,220,255,0.6)';
-      ctx.fillText(sec.name, p.x-20, p.y-8);
+      // only draw sector labels when zoomed sufficiently or if any contained system is hovered/selected
+      const sectorImportant = sec.systems.some(s => G.selectedSystem === s || G.hoverNode === s);
+      if(sectorImportant || G.view.scale >= LABEL_SECTOR_MIN_SCALE){
+        ctx.font = `${12*G.view.scale}px sans-serif`; ctx.fillStyle='rgba(200,220,255,0.6)';
+        // avoid overlapping with previously drawn labels
+        const text = sec.name;
+        const metrics = ctx.measureText(text);
+        const tw = metrics.width + 6, th = 14 * Math.max(1, G.view.scale);
+        if(sectorImportant || canPlaceLabel(p.x-20, p.y-8-th, tw, th)) ctx.fillText(text, p.x-20, p.y-8);
+      }
     }
   }
 
@@ -1528,10 +1582,19 @@ function checkWinConditions(){
   const otherFleets = G.fleets.filter(f=>f.owner !== 1).length;
   const playerSystems = G.systems.filter(s=>s.owner===1).length;
   const playerFleets = G.fleets.filter(f=>f.owner===1).length;
+  const isSpectator = G.players[1] && G.players[1].isSpectator;
+
+  // If no opposing systems/fleets remain, end the match. For spectators show a neutral message.
   if(otherSystems===0 && otherFleets===0){
-    setTimeout(()=>{ alert('You Win!'); stopGame(); }, 10);
+    setTimeout(()=>{ 
+      if(isSpectator) alert('Match ended — no AI opponents remain');
+      else alert('You Win!');
+      stopGame();
+    }, 10);
   }
-  if(playerSystems===0 && playerFleets===0){
+
+  // Only trigger 'AI Wins' when the human player is actually participating (not spectating)
+  if(!isSpectator && playerSystems===0 && playerFleets===0){
     setTimeout(()=>{ alert('AI Wins!'); stopGame(); }, 10);
   }
 }
@@ -1626,8 +1689,54 @@ function stopGame(){
   try{ document.getElementById('hud').style.display='none'; }catch(e){}
   try{ document.getElementById('footer').style.display='none'; }catch(e){}
 
+  // Re-enable any player-specific controls that spectate mode may have disabled
+  try{
+    ['buildMine','buildShipyard','buildOutpost','buildFleet','sendFleet','autoCapture','stopAutoCapture'].forEach(id=>{
+      const el = document.getElementById(id); if(el) el.disabled = false;
+    });
+    if(G.players[1]) G.players[1].isSpectator = false;
+  } catch(e){}
+
   // Force a redraw to reflect stopped state
   try{ draw(); }catch(e){}
+}
+
+/* ===== Spectate Mode =====
+   startSpectate(settings): Launch a game where the player is set to spectator (no player-owned systems or fleets)
+   and the AIs play against each other. HUD is shown read-only and player controls are disabled.
+*/
+function startSpectate(settings){
+  // Start the game normally
+  startGame(settings);
+  // Immediately convert player (id 1) to a spectator: remove ownership and fleets
+  // Make a shallow snapshot of player data so we can restore if needed (not strictly necessary)
+  try{
+    // Remove any player-owned systems: set them to neutral (owner 0)
+    for(const s of G.systems){ if(s.owner === 1) s.owner = 0; }
+    // Remove player fleets
+    for(const f of G.fleets.slice()){ if(f.owner === 1) removeFleet(f); }
+    // Remove player entry so player controls think there's no player
+    if(G.players[1]) G.players[1].isSpectator = true;
+
+    // Hide or disable player-specific controls in the HUD/menu
+    try{ document.getElementById('buildMine').disabled = true; }catch(e){}
+    try{ document.getElementById('buildShipyard').disabled = true; }catch(e){}
+    try{ document.getElementById('buildOutpost').disabled = true; }catch(e){}
+    try{ document.getElementById('buildFleet').disabled = true; }catch(e){}
+    try{ document.getElementById('sendFleet').disabled = true; }catch(e){}
+    try{ document.getElementById('autoCapture').disabled = true; }catch(e){}
+    try{ document.getElementById('stopAutoCapture').disabled = true; }catch(e){}
+
+    // Update HUD display to indicate spectating
+    const status = document.getElementById('statusText'); if(status) status.textContent = 'Spectating AI — Seed: ' + (G.seed||'random');
+    // Keep HUD visible but read-only
+    document.getElementById('hud').style.display = 'block';
+    document.getElementById('footer').style.display = 'block';
+
+    // Make sure updateSelectionUI doesn't try to show player credits
+    if(G.players[1]){ G.players[1].credits = 0; G.players[1].income = 0; }
+    updateSelectionUI(); draw();
+  } catch(e){ console.error('startSpectate error', e); }
 }
 
 /* ===== Init ===== */
