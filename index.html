@@ -1399,39 +1399,8 @@ function draw(){
     ctx.fillStyle = fill;
     ctx.arc(sc.x, sc.y, r, 0, Math.PI*2); ctx.fill();
     ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,0.6)'; ctx.stroke();
-    // Label decluttering: only draw many labels when zoomed in enough; always draw for selected/hovered
-    // Collision avoidance: don't draw labels that overlap previously drawn labels
-    const LABEL_SYSTEM_MIN_SCALE = 0.6; // below this, most system labels are hidden
-    const LABEL_FLEET_MIN_SCALE = 0.85; // fleet strength numbers hidden below this
-    const LABEL_SECTOR_MIN_SCALE = 0.7; // sector labels hidden below this
-    // Prepare collision tracking array on ctx (keeps screen-space rects)
-    if(!ctx._labelRects) ctx._labelRects = [];
-    // helper to test overlap and register
-    function rectsOverlap(a,b){ return !(a.x+b.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h); }
-    function canPlaceLabel(x,y,w,h){
-      const rect = {x: x, y: y, w: w, h: h};
-      for(const rct of ctx._labelRects){ if(rectsOverlap(rect, rct)) return false; }
-      ctx._labelRects.push(rect); return true;
-    }
-
-    // draw system name: prefer selected/hovered always
     ctx.font = `${Math.max(10, 10*G.view.scale)}px sans-serif`;
-    const labelX = sc.x + (r + 6);
-    const labelY = sc.y - (r - 4);
-    const isImportant = (G.selectedSystem === s) || (G.hoverNode === s);
-    const showSystemLabel = isImportant || G.view.scale >= LABEL_SYSTEM_MIN_SCALE;
-    if(showSystemLabel){
-      // measure and avoid collisions at smaller scales
-      const metrics = ctx.measureText(s.name);
-      const textW = metrics.width + 6;
-      const textH = Math.max(12, 10 * G.view.scale) + 4;
-      // when zoomed out a bit, reduce opacity
-      const alpha = isImportant ? 0.98 : clamp((G.view.scale - 0.35) / (1.0 - 0.35), 0.2, 0.98);
-      if(isImportant || canPlaceLabel(labelX, labelY - textH, textW, textH)){
-        ctx.fillStyle = `rgba(220,230,255,${alpha})`;
-        ctx.fillText(s.name, labelX, labelY);
-      }
-    }
+    ctx.fillStyle='rgba(220,230,255,0.9)'; ctx.fillText(s.name, sc.x + (r + 6), sc.y - (r - 4));
 
     // draw mines (multiple) — position relative to radius
     if(s.mines){
@@ -1451,11 +1420,9 @@ function draw(){
       }
     }
 
-    // optionally draw defense number, positioned under the system — show when zoomed in or selected/hovered
-    const DEFENSE_MIN_SCALE = 0.7;
-    ctx.font = `${Math.max(9, 9*G.view.scale)}px sans-serif`;
-    const showDefense = isImportant || G.view.scale >= DEFENSE_MIN_SCALE;
-    if(showDefense){ ctx.fillStyle='rgba(200,230,255,0.85)'; ctx.fillText(s.defense, sc.x - (r * 0.5), sc.y + (r + 4)); }
+    // optionally draw defense number, positioned under the system
+    ctx.fillStyle='rgba(200,230,255,0.85)'; ctx.font = `${Math.max(9, 9*G.view.scale)}px sans-serif`;
+    ctx.fillText(s.defense, sc.x - (r * 0.5), sc.y + (r + 4));
   }
 
   // sector labels
@@ -1464,16 +1431,8 @@ function draw(){
       const avgX = sec.systems.reduce((a,b)=>a+b.x,0)/sec.systems.length;
       const avgY = sec.systems.reduce((a,b)=>a+b.y,0)/sec.systems.length;
       const p = worldToScreen(avgX,avgY);
-      // only draw sector labels when zoomed sufficiently or if any contained system is hovered/selected
-      const sectorImportant = sec.systems.some(s => G.selectedSystem === s || G.hoverNode === s);
-      if(sectorImportant || G.view.scale >= LABEL_SECTOR_MIN_SCALE){
-        ctx.font = `${12*G.view.scale}px sans-serif`; ctx.fillStyle='rgba(200,220,255,0.6)';
-        // avoid overlapping with previously drawn labels
-        const text = sec.name;
-        const metrics = ctx.measureText(text);
-        const tw = metrics.width + 6, th = 14 * Math.max(1, G.view.scale);
-        if(sectorImportant || canPlaceLabel(p.x-20, p.y-8-th, tw, th)) ctx.fillText(text, p.x-20, p.y-8);
-      }
+      ctx.font = `${12*G.view.scale}px sans-serif`; ctx.fillStyle='rgba(200,220,255,0.6)';
+      ctx.fillText(sec.name, p.x-20, p.y-8);
     }
   }
 
