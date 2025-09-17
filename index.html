@@ -365,6 +365,9 @@ function generateGalaxy(settings){
   const cityBonus = randDecimal(rng, 0.1, 2.5);
   playerStart.baseProd = Math.round((playerStart.baseProd + cityBonus)*10)/10;
 
+  // record the designated player starting system so other code can refer to it
+  G.playerStart = playerStart;
+
   // players
   G.players[1] = {id:1, name:'Player', credits:100.0, income:0.0, isAI:false, difficulty:1.0};
   const aiCount = Math.max(1, Math.min(100, settings.aiCount || 3));
@@ -1500,8 +1503,29 @@ function startGame(settings){
   for(let pid in G.players){ if(G.players[pid].isAI){ G.players[pid].credits = 300 * settings.difficulty; G.players[pid].difficulty = settings.difficulty; } }
 
   // starter fleets
-  const pStart = G.systems.find(s=>s.owner===1); if(pStart) G.fleets.push(new Fleet(G.nextFleetId++,1,3,pStart));
+  const pStart = G.playerStart || G.systems.find(s=>s.owner===1);
+  if(pStart) G.fleets.push(new Fleet(G.nextFleetId++,1,3,pStart));
   for(let pid in G.players){ if(G.players[pid].isAI){ const s = G.systems.find(x=>x.owner==pid); if(s) G.fleets.push(new Fleet(G.nextFleetId++, parseInt(pid), Math.max(1,2 + Math.floor(Math.random()*3)), s)); } }
+
+  // center & zoom on player's starting system
+  if(pStart){
+    const targetScale = 1.2;
+    // Snap view immediately to ensure centering works across browsers; then perform a small animation to settle
+    G.view.x = pStart.x; G.view.y = pStart.y; G.view.scale = targetScale;
+    try{ resize(); draw(); } catch(e) { if(G.canvas) draw(); }
+    // also perform a brief animate to give a smooth effect from current (redundant but harmless)
+    try{ animateViewTo(pStart.x, pStart.y, targetScale, 0.6); } catch(e){ /* ignore */ }
+
+    // Hide left pane and dev console UI on game start so the player gets an unobstructed view
+    try{
+      const leftToggle = document.getElementById('toggleLeftPane');
+      const devToggle = document.getElementById('toggleDevConsole');
+      if(leftToggle){ leftToggle.checked = false; const lp = document.getElementById('leftPane'); if(lp) lp.style.display = 'none'; }
+      if(devToggle){ devToggle.checked = false; const dp = document.getElementById('devConsolePanel'); if(dp) dp.style.display = 'none'; }
+      // trigger a resize event so the canvas recalculates dimensions (resize listener calls resize())
+      setTimeout(()=>{ try{ window.dispatchEvent(new Event('resize')); }catch(e){ if(G.canvas) draw(); } }, 80);
+    } catch(e) { /* ignore UI hide errors */ }
+  }
 
   G.running = true; lastTime = performance.now();
   function loop(t){
@@ -1511,6 +1535,22 @@ function startGame(settings){
     rafId = requestAnimationFrame(loop);
   }
   rafId = requestAnimationFrame(loop);
+}
+
+// Smoothly animate the view (center and zoom) to target position/scale over duration (seconds)
+function animateViewTo(tx, ty, tscale, duration = 0.8){
+  const startX = G.view.x, startY = G.view.y, startS = G.view.scale;
+  const startTime = performance.now();
+  function step(now){
+    const t = Math.min(1, (now - startTime) / (duration * 1000));
+    const ease = (t<0.5) ? (2*t*t) : (-1 + (4-2*t)*t); // smooth ease in/out
+    G.view.x = lerp(startX, tx, ease);
+    G.view.y = lerp(startY, ty, ease);
+    G.view.scale = lerp(startS, tscale, ease);
+    resize(); draw();
+    if(t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
 }
 
 function stopGame(){
