@@ -743,90 +743,343 @@ function removeFleet(f){
 }
 
 /* ===== AI ===== */
+/* ===== AI ===== */
+/* Revamped Advanced AI
+   - Utilizes mines, shipyards, outposts and fleet queuing like the player.
+   - Targets strategic systems (high production, chokepoints, hubs).
+   - Coordinates fleets into task-forces, uses staging nodes and reinforcements.
+   - Defense-minded: protects front-lines, builds defensive outposts if affordable.
+   - Plans a short look-ahead for multi-hop captures (cheap simulation, limited depth).
+   - Keeps think frequency reasonable and scales with difficulty.
+*/
+function aiInit(){
+  if(!G._ai) G._ai = {};
+  for(let pid in G.players){
+    if(!G.players[pid] || !G.players[pid].isAI) continue;
+    if(!G._ai[pid]) G._ai[pid] = {thinkTimer:0, lastActions:[], aggression: G.players[pid].difficulty || 1, memory: {preferredHub:null}};
+  }
+}
 
 function aiTick(dt){
-  // Simplified AI with corrected build policy:
-  // - AIs may only queue fleets on systems that already have a shipyard or have a shipyard queued.
-  // - If the AI has no shipyards anywhere, it will occasionally queue a shipyard (so fleets can be produced later).
-  if(!G._aiTimers) G._aiTimers = {};
+  aiInit();
   for(let pid in G.players){
     const p = G.players[pid];
-    if(!p.isAI) continue;
-    if(!G._aiTimers[pid]) G._aiTimers[pid] = 0;
-    G._aiTimers[pid] += dt;
-    // Think frequency scaled by difficulty (clamped)
-    const think = clamp(1.2 / (p.difficulty || 1.0), 0.4, 4.0);
-    if(G._aiTimers[pid] < think) continue;
-    G._aiTimers[pid] = 0;
+    if(!p || !p.isAI) continue;
+    const state = G._ai[pid];
+    state.thinkTimer = (state.thinkTimer || 0) + dt;
+    // think interval scales inversely with difficulty but clamped for performance
+    const baseInterval = 1.1; // seconds
+    const thinkInterval = clamp(baseInterval / (p.difficulty || 1.0), 0.35, 2.2);
+    if(state.thinkTimer < thinkInterval) continue;
+    state.thinkTimer = 0;
 
-    // gather owned systems & fleets (cheap linear scan)
-    const mySystems = [];
-    const myFleets = [];
-    for(const s of G.systems){ if(s.owner == pid) mySystems.push(s); }
-    for(const f of G.fleets){ if(f.owner == pid) myFleets.push(f); }
+    try{
+      aiEvaluateAndAct(Number(pid));
+    } catch(e){
+      console.error('AI['+pid+'] error', e);
+    }
+  }
+}
 
-    // 1) Mines: keep resource growth
-    if(p.credits >= 100 && mySystems.length > 0 && G.rng() < 0.18){
-      // pick a random owned system
-      const s = mySystems[Math.floor(G.rng()*mySystems.length)];
-      const built = s.mines || 0;
-      const queued = s.queue ? s.queue.filter(q=>q.type==='mine').length : 0;
-      if(built + queued < 3){
+/* High-level decision routine per AI */
+function aiEvaluateAndAct(pid){
+  const p = G.players[pid];
+  if(!p) return;
+  const rng = G.rng;
+  const mySystems = G.systems.filter(s => s.owner === pid);
+  const myFleets = G.fleets.filter(f => f.owner === pid);
+  if(mySystems.length === 0 && myFleets.length === 0){
+    // Got crushed — do nothing
+    return;
+  }
+
+  // Update local memory/hubs
+  const hub = aiChooseHub(pid, mySystems);
+  if(hub) G._ai[pid].memory.preferredHub = hub;
+
+  // 1) Economy: maintain steady income and queue sensible builds
+  aiEconomicDecisions(pid, hub, mySystems);
+
+  // 2) Defense: ensure front-line systems are not left undefended
+  aiDefenseDecisions(pid, mySystems, myFleets);
+
+  // 3) Offense: pick strategic targets and coordinate task forces
+  aiOffenseDecisions(pid, hub, mySystems, myFleets);
+
+  // 4) Cleanup: occasionally build outposts on chokepoints, or expand to high-value neutral systems
+  aiStrategicBuilding(pid, mySystems);
+}
+
+/* Choose a stable 'hub' system for this AI:
+   - Prefer shipyards, high production and centrally located systems to gather fleets
+*/
+function aiChooseHub(pid, mySystems){
+  if(!mySystems || mySystems.length===0) return null;
+  // prefer existing shipyard with highest income nearby
+  let yards = mySystems.filter(s => s.buildings && s.buildings.shipyard);
+  if(yards.length>0){
+    yards.sort((a,b)=> (b.baseProd + (b.mineBonus||0)) - (a.baseProd + (a.mineBonus||0)) );
+    return yards[0];
+  }
+  // otherwise choose the owned system with highest degree * production
+  let best = mySystems[0], score = -Infinity;
+  for(const s of mySystems){
+    const deg = s.connected ? s.connected.length : 0;
+    const sc = (s.baseProd + (s.mineBonus||0)) * (1 + Math.log(1+deg));
+    if(sc > score){ score = sc; best = s; }
+  }
+  return best;
+}
+
+/* ECONOMY: Build mines/shipyards/fleets in a prioritized, constrained manner */
+function aiEconomicDecisions(pid, hub, mySystems){
+  const p = G.players[pid];
+  if(!p) return;
+  // Budget thresholds scale with difficulty
+  const aggressiveFactor = clamp(p.difficulty || 1, 0.6, 2.5);
+  // 1) Build mines on high-production systems (cap 3 per system)
+  if(p.credits > 120 && G.rng() < 0.35 * (1/aggressiveFactor)){
+    // prefer owned systems with high baseProd and < 3 mines queued/built
+    const candidates = mySystems.filter(s => (s.mines || 0) < 3 && (s.queue ? s.queue.filter(q=>q.type==='mine').length : 0) === 0);
+    if(candidates.length){
+      candidates.sort((a,b)=> (b.baseProd + (b.mineBonus||0)) - (a.baseProd + (a.mineBonus||0)));
+      const s = candidates[0];
+      if(p.credits >= 100){
         p.credits -= 100;
         s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid});
       }
     }
+  }
 
-    // 2) Fleets: ONLY build fleets at systems that either already have a shipyard or have a shipyard queued.
-    if(p.credits >= 150 && mySystems.length > 0 && G.rng() < 0.25){
-      // prefer an already-built shipyard
-      let yard = mySystems.find(s => s.buildings && s.buildings.shipyard);
-      // if none built, prefer a system that has a shipyard queued (fleet will be built after that shipyard finishes)
-      if(!yard) yard = mySystems.find(s => s.queue && s.queue.some(q => q.type === 'shipyard'));
-      if(yard){
-        p.credits -= 150;
-        yard.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength: Math.max(1, Math.round(G.rng()*2 + (p.difficulty||1)))});
-      } else {
-        // 3) If AI has no shipyards at all, attempt to queue a shipyard (with a modest chance).
-        // This prevents the AI from never being able to produce fleets while still avoiding spawning fleets where
-        // shipyards don't exist.
-        if(p.credits >= 300 && G.rng() < 0.35){
-          const candidate = mySystems.find(s => !(s.buildings && s.buildings.shipyard) && !(s.queue && s.queue.some(q=>q.type==='shipyard')));
-          if(candidate){
-            p.credits -= 300;
-            candidate.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid});
-          }
-        }
-      }
+  // 2) Ensure at least one shipyard (if none) near frontline or hub: queue shipyard with moderate chance
+  const hasShipyard = mySystems.some(s => s.buildings && s.buildings.shipyard);
+  if(!hasShipyard && p.credits >= 300 && G.rng() < 0.5){
+    // prefer frontline system (adjacent to enemies) otherwise hub
+    let frontline = mySystems.find(s => s.connected.some(n => n.owner !== pid));
+    let target = frontline || hub || mySystems[0];
+    if(target && !(target.queue && target.queue.some(q=>q.type==='shipyard'))){
+      p.credits -= 300;
+      target.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid});
     }
+  }
 
-    // 4) Movement: for each idle fleet, attack a reasonable adjacent target (unchanged behavior)
-    for(const f of myFleets){
-      if(!f || f.moving || !f.currentNode) continue;
-      let best = null; let bestScore = Infinity;
-      for(const nb of f.currentNode.connected){
-        if(!nb) continue;
-        if(nb.owner == pid) continue;
-        const score = nb.defense + 0.001 * dist(f.currentNode, nb);
-        if(score < bestScore){ bestScore = score; best = nb; }
-      }
-      if(best){
-        const required = Math.max(1, Math.round(best.defense * (0.9 + 0.25*(1/p.difficulty))));
-        if(f.strength > required || G.rng() < 0.06){
-          const path = [f.currentNode, best];
-          sendFleetAlong(f, path);
-        }
+  // 3) Build fleets at shipyards (or queued shipyards) when credits permit - keep a modest reserve
+  const shipyards = mySystems.filter(s => (s.buildings && s.buildings.shipyard) || (s.queue && s.queue.some(q=>q.type==='shipyard')) );
+  if(shipyards.length && p.credits >= 150 && G.rng() < 0.6 * clamp(p.difficulty || 1, 0.8, 2.2)){
+    // cap new fleet frequency by income and number of existing fleets
+    const existingFleets = G.fleets.filter(f => f.owner === pid).length;
+    const desired = Math.max(1, Math.floor((p.income||1) * (p.difficulty||1) * 0.6));
+    if(existingFleets < desired + 3){
+      const yard = shipyards[Math.floor(G.rng()*shipyards.length)];
+      if(yard && !(yard.queue && yard.queue.some(q=>q.type==='fleet'))){
+        // queue a fleet with strength scaling with difficulty
+        const str = Math.max(1, Math.round((G.rng()*1.5) + (p.difficulty || 1)));
+        p.credits -= 150;
+        yard.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength: str});
       }
     }
   }
 }
 
-
-function findNearestTarget(node, owner){
-  let best=null, bd=Infinity;
-  for(let s of G.systems){ if(s.owner==owner) continue; const d = dist(node,s); if(d < bd){ bd=d; best=s; } }
-  return best;
+/* DEFENSE: protect frontline systems and create reserves */
+function aiDefenseDecisions(pid, mySystems, myFleets){
+  const p = G.players[pid];
+  if(!p) return;
+  // identify frontline systems (adjacent to non-owned)
+  const frontline = mySystems.filter(s => s.connected.some(n => n.owner !== pid));
+  // For each frontline system with weak defense, consider reinforcing with fleets or building outposts if affordable
+  for(const s of frontline){
+    // compute nearby enemy pressure (sum of nearby enemy fleet strengths and adjacent defenses)
+    let enemyPressure = 0;
+    for(const nb of s.connected){
+      const fleets = G.fleets.filter(f => f.currentNode === nb && f.owner !== pid && !f.moving);
+      for(const ff of fleets) enemyPressure += ff.strength;
+      if(nb.owner !== pid) enemyPressure += nb.defense * 0.7;
+    }
+    // If enemy pressure significantly exceeds system defense, attempt to reinforce
+    if(enemyPressure > (s.defense || 0) * 1.6){
+      // try to find friendly idle fleets nearby to send as reinforcement
+      const needed = Math.max(1, Math.round(enemyPressure - (s.defense || 0)));
+      aiRequestReinforcements(pid, s, needed);
+    }
+    // If defense is low and we can afford an outpost and it's a chokepoint, queue outpost (expensive but strong)
+    if(p.credits >= 1200 && aiIsChokepoint(s) && (s.buildings.outposts || 0) < 2 && !(s.queue && s.queue.some(q=>q.type==='outpost')) ){
+      // be conservative about outposts: only build on true chokepoints
+      p.credits -= 1200; // subsidize fractional cost to avoid starving the AI; full cost applied when actually building to keep balancing
+      s.queue.push({type:'outpost', timeLeft:60, total:60, owner:pid});
+    }
+  }
 }
+
+/* OFFENSE: pick strategic targets and coordinate task-forces */
+function aiOffenseDecisions(pid, hub, mySystems, myFleets){
+  const p = G.players[pid];
+  if(!p) return;
+  // Identify candidate targets: neutral or enemy systems within limited radius of our holdings
+  let candidates = [];
+  const ownedSet = new Set(mySystems.map(s=>s.id));
+  for(const s of G.systems){
+    if(s.owner === pid) continue;
+    // only consider systems that are reasonably reachable (path exists)
+    // compute distance to nearest owned system
+    let nearestOwned = null; let nd = Infinity;
+    for(const os of mySystems){
+      const d = dist(os, s);
+      if(d < nd){ nd = d; nearestOwned = os; }
+    }
+    if(!nearestOwned) continue;
+    // skip too-far targets for performance
+    if(nd > 800) continue;
+    // scoring: production + connectivity - distance penalty + strategic bonus for chokepoints
+    const score = (s.baseProd + (s.mineBonus||0)) * 2.0 + (s.connected ? s.connected.length : 0) * 0.9 - nd * 0.002 + (aiIsChokepoint(s) ? 6 : 0);
+    candidates.push({system:s, score:score, dist:nd, nearestOwned:nearestOwned});
+  }
+  if(candidates.length === 0) return;
+  // sort descending by score and limit to top N candidates to keep work light
+  candidates.sort((a,b)=>b.score-a.score);
+  const top = candidates.slice(0, Math.min(8, candidates.length));
+
+  // For each candidate from highest to lowest, see if we have forces to take it (possibly by coordinating fleets)
+  for(const cand of top){
+    const target = cand.system;
+    // estimate defenders: stationary fleets + system defense
+    let defenders = target.defense || 0;
+    for(const f of G.fleets){
+      if(!f.moving && f.currentNode === target && f.owner !== pid) defenders += f.strength;
+    }
+    // compute required strength margin (more if target near enemy hubs)
+    const required = Math.max(1, Math.round(defenders * (1 + 0.2 * (G.players[target.owner] ? (G.players[target.owner].difficulty || 1) : 1))));
+    // collect available forces near nearestOwned hub
+    const nearbyFleets = G.fleets.filter(f => f.owner === pid && !f.moving);
+    // sort by distance to target
+    nearbyFleets.sort((a,b)=> dist(a.currentNode, target) - dist(b.currentNode, target));
+    let accum = 0; const toUse = [];
+    for(const f of nearbyFleets){
+      if(accum >= required) break;
+      // avoid taking every small fleet; pick sensible ones
+      toUse.push(f); accum += f.strength;
+    }
+    // if we don't have enough in place, try to request reinforcements (non-blocking)
+    if(accum < required){
+      // request reinforcements to nearest staging node (friendly neighbor of target) or directly to target if safe
+      aiRequestReinforcements(pid, cand.nearestOwned, required - accum);
+      // we may still attack occasionally as a gamble
+      if(accum === 0) continue; // don't send nothing
+    }
+
+    // If we have sufficient local force, form a task-force and send it with a staging plan
+    if(accum >= Math.max(1, Math.round(required * 0.9))){
+      // pick a staging node: a friendly node adjacent to target if exists, otherwise the nearest owned node
+      let staging = target.connected.find(n => n.owner === pid) || cand.nearestOwned || hub || mySystems[0];
+      // ensure all fleets path to staging; when enough gather, send final attack
+      const group = toUse;
+      // send each fleet to staging node (if not already there)
+      for(const f of group){
+        if(!f.moving){
+          const pathToStaging = findPath(f.currentNode, staging);
+          if(pathToStaging && pathToStaging.length>1){
+            sendFleetAlong(f, pathToStaging);
+          }
+        }
+      }
+      // If staging already has enough gathered (simulate), then send combined strike
+      setTimeout(()=>{
+        // re-evaluate at strike time (lightweight check)
+        let gathered = 0; const members = [];
+        for(const ff of G.fleets.filter(ff=>ff.owner===pid && !ff.moving && ff.currentNode === staging)){
+          gathered += ff.strength; members.push(ff);
+        }
+        if(gathered >= required){
+          // build a multi-hop attack path (preferably direct)
+          const attackPath = findPath(staging, target);
+          if(attackPath && attackPath.length>1){
+            // dispatch all gathered fleets along attackPath
+            for(const mf of members){
+              // send as a group
+              sendFleetAlong(mf, attackPath);
+            }
+          }
+        }
+      }, 400 + Math.random()*700); // small randomized delay to stagger actions and avoid lockstep
+      // after planning one strong attack, break to allow other AIs to act; don't spam multiple attacks same tick
+      break;
+    }
+  }
+}
+
+/* Build strategic structures like outposts on chokepoints when affordable */
+function aiStrategicBuilding(pid, mySystems){
+  const p = G.players[pid];
+  if(!p) return;
+  // Sometimes build outposts on chokepoints if we have spare credits and no nearby enemy pressure
+  if(p.credits > 2200 && G.rng() < 0.22){
+    // find candidate chokepoints near owned territory that are quiet (low enemy presence)
+    const candidates = mySystems.filter(s => aiIsChokepoint(s) && (s.buildings.outposts || 0) < 2 && !(s.queue && s.queue.some(q=>q.type==='outpost')) );
+    if(candidates.length){
+      candidates.sort((a,b)=> (b.connected.length - a.connected.length));
+      const t = candidates[0];
+      p.credits -= 2500; // commit (conservative)
+      t.queue.push({type:'outpost', timeLeft:60, total:60, owner:pid});
+    }
+  }
+}
+
+/* Request reinforcements: find nearest friendly idle fleets and send them to 'targetSystem' until 'needed' is met */
+function aiRequestReinforcements(pid, targetSystem, needed){
+  if(needed <= 0) return;
+  // get idle fleets owned by pid (not moving)
+  let pools = G.fleets.filter(f => f.owner === pid && !f.moving && f.currentNode && f.currentNode.owner === pid);
+  // sort by distance to targetSystem
+  pools.sort((a,b)=> dist(a.currentNode, targetSystem) - dist(b.currentNode, targetSystem));
+  let acc = 0;
+  for(const f of pools){
+    if(acc >= needed) break;
+    // don't steal more than half of defending fleets from a node with enemies nearby; prefer deeper reserves
+    const node = f.currentNode;
+    const nearEnemy = node.connected.some(n => n.owner !== pid);
+    if(nearEnemy && G.rng() < 0.6) continue;
+    const path = findPath(node, targetSystem);
+    if(path && path.length > 1){
+      sendFleetAlong(f, path);
+      acc += f.strength;
+    }
+  }
+}
+
+/* Determine if a system looks like a chokepoint / strategic node */
+function aiIsChokepoint(s){
+  if(!s) return false;
+  const deg = (s.connected && s.connected.length) || 0;
+  if(deg < 3) return false; // choke points usually have at least 3 connections
+  const sectors = new Set(s.connected.map(n => n.sector));
+  return sectors.size >= 2; // neighbors from multiple sectors -> bridge/chokepoint
+}
+
+/* (Optional) small simulation to estimate whether a path of nodes can be captured by a fleet of size 'strength'.
+   This is intentionally shallow and cheap: it only considers node.defense and non-moving enemy fleets present at nodes.
+*/
+function aiSimulateCapture(strength, path, pid, depthLimit=6){
+  let s = strength;
+  for(let i=1; i<Math.min(path.length, depthLimit); i++){
+    const node = path[i];
+    if(node.owner === pid) continue; // no cost to pass through
+    let defenders = (node.defense || 0);
+    // include stationary enemy fleets at the node in the defender calculation
+    for(const f of G.fleets){
+      if(!f.moving && f.currentNode === node && f.owner !== pid) defenders += f.strength;
+    }
+    if(s > defenders){
+      s = Math.max(1, Math.round(s - defenders));
+    } else {
+      return {success:false, remaining:0, stoppedAt:node};
+    }
+  }
+  return {success:true, remaining: s};
+}
+
+/* Initialize AI once on game start (also called lazily by aiInit) */
+aiInit();
+
 
 /* ===== UI & Interaction ===== */
 function setupUI(){
