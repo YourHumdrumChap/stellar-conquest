@@ -36,6 +36,16 @@
 </head>
 <body>
   <div id="container">
+    <!-- UI Toggle Floating Button -->
+    <div id="uiToggleBtn" title="Toggle UI Panel" style="position:fixed;right:18px;bottom:18px;z-index:120;background:linear-gradient(90deg,var(--accent),#2ec4ff);color:#021022;padding:8px;border-radius:10px;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,0.5)">UI</div>
+    <div id="uiTogglePanel" style="position:fixed;right:18px;bottom:70px;z-index:120;background:rgba(2,6,12,0.85);color:#dbe6ff;padding:10px;border-radius:8px;display:none;min-width:200px">
+      <div style="font-weight:600;margin-bottom:6px">UI Controls</div>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="toggleLeftPane" checked /> Show Left Pane</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="toggleDevConsole" checked /> Show Dev Console</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="toggleHUD" checked /> Show HUD</label>
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="toggleFooter" checked /> Show Footer</label>
+      <div class="small" style="margin-top:8px">Shortcuts: <strong>U</strong> toggles this panel</div>
+    </div>
     <div id="leftPane">
       <div id="menu">
         <h1>Galactic Conquest</h1>
@@ -82,6 +92,19 @@
       </div>
     </div>
 
+    <div class="panel" id="devConsolePanel" style="margin:12px">
+      <div class="small">Dev Console (testing)</div>
+      <div style="margin-top:8px">
+        <textarea id="devConsoleInput" placeholder="Type command, e.g. 'credits 1000' or 'spawn 12 3 2'" style="width:100%;height:64px;border-radius:6px;padding:8px;background:transparent;border:1px solid rgba(255,255,255,0.04);color:inherit;font-family:monospace"></textarea>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button id="devConsoleRun">Run</button>
+          <button id="devConsoleClear">Clear</button>
+          <button id="devConsoleFillExample">Example</button>
+        </div>
+        <pre id="devConsoleOutput" style="margin-top:8px;height:120px;overflow:auto;background:rgba(0,0,0,0.08);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;color:var(--muted)"></pre>
+      </div>
+    </div>
+
     <div id="gameArea">
       <div id="topBar" style="display:none">
         <button id="toMenu">Main Menu</button>
@@ -99,9 +122,15 @@
           <div id="selectedOwner" class="small"></div>
           <div id="selectedIncome" class="small"></div>
           <div class="btnRow">
-            <button id="buildMine">Build Mine (Cost: <span id="mineCost">100</span>)</button>
-            <button id="buildShipyard">Build Shipyard (Cost: <span id="yardCost">300</span>)</button>
-            <button id="buildOutpost">Build Outpost (Cost: <span id="outpostCost">2500</span>)</button>
+            <div style="flex:1;display:flex;gap:8px;align-items:center">
+              <button id="buildMine">Build Mine (Cost: <span id="mineCost">100</span>)</button>
+              <button id="buildShipyard">Build Shipyard (Cost: <span id="yardCost">300</span>)</button>
+              <button id="buildOutpost">Build Outpost (Cost: <span id="outpostCost">2500</span>)</button>
+            </div>
+            <div style="width:90px;display:flex;flex-direction:column;align-items:center;justify-content:center">
+              <label class="small" style="margin:0;font-size:11px">Count</label>
+              <input id="buildCount" type="number" value="1" min="1" step="1" style="width:66px;padding:6px" />
+            </div>
           </div>
           <div style="margin-top:8px" class="small">Build Queue</div>
           <div id="buildQueue"></div>
@@ -114,6 +143,12 @@
             <button id="buildFleet">Build Fleet (Cost: <span id="buildCost">150</span>)</button>
             <button id="sendFleet">Send Fleet</button>
             <button id="autoCapture" title="Automatically capture a chain of weak nearby systems">Auto Capture</button>
+            <button id="stopAutoCapture" title="Stop Auto Capture on selected fleets">Stop Auto</button>
+          </div>
+          <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+            <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acIncludeNeutral" checked /> Include Neutrals</label>
+            <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acIncludeAI" checked /> Include AIs</label>
+            <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acStopIfSuicidal" /> Stop before suicidal attack</label>
           </div>
         </div>
 
@@ -434,15 +469,19 @@ function tick(dt){
         const survived = resolveArrival(f);
         if(!survived) continue; // fleet destroyed and removed
         // advance along path if there is another hop
-        if(f.path && (f.pathIndex + 1) < f.path.length - 1){
-          f.pathIndex += 1;
-          const next = f.path[f.pathIndex+1];
-          f._from = f.path[f.pathIndex];
-          f._to = next;
-          f.progress = 0;
-          f.moving = true;
+        if(f.path && Array.isArray(f.path)){
+          const idx = f.path.findIndex(p => p === f.currentNode);
+          if(idx >= 0 && (idx + 1) < f.path.length){
+            // continue to next hop
+            f.pathIndex = idx;
+            f._from = f.path[f.pathIndex];
+            f._to = f.path[f.pathIndex + 1];
+            f.progress = 0; f.moving = true;
+          } else {
+            // finished path
+            f.moving = false; f._from = null; f._to = null; f.progress = 0;
+          }
         } else {
-          // finished path
           f.moving = false; f._from = null; f._to = null; f.progress = 0;
         }
       }
@@ -454,6 +493,23 @@ function tick(dt){
 
   // AI
   aiTick(dt);
+
+  // Auto-capture: for any idle player fleets that have the autoCapture flag, pick next target and send
+  for(let f of G.fleets.slice()){
+    if(!f || f.owner !== 1) continue;
+    if(f.autoCapture && !f.moving){
+      const cfg = f.autoCapture;
+      const fullPath = findWeakestClosestLine(f.currentNode, f.owner, cfg.includeNeutral, cfg.includeAI);
+      if(fullPath && fullPath.length > 1){
+        const built = buildAutoCapturePath(fullPath, f.strength, f.owner, cfg.stopIfSuicidal);
+        if(built && built.length > 1){ sendFleetAlong(f, built); }
+        else {
+          // nothing to do; clear autoCapture if it can't proceed further
+          // keep it set so player can resume later manually
+        }
+      }
+    }
+  }
 
   // recalc & UI
   recalcIncome();
@@ -558,6 +614,32 @@ function resolveArrival(f){
       }
       const newStrength = Math.max(1, Math.round(leftover));
       const newFleet = new Fleet(G.nextFleetId++, s.owner, newStrength, node);
+      // If the arriving fleet had an intended path, transfer it to the new fleet so it continues
+      try{
+        if(f && f.path){
+          newFleet.path = f.path;
+          // After arrival at 'node', find index of this node in the path
+          const idx = newFleet.path.findIndex(p=>p === node);
+          if(idx >= 0){
+            newFleet.pathIndex = idx;
+            // if there is a next hop, set movement
+            if((newFleet.pathIndex + 1) < newFleet.path.length){
+              newFleet._from = newFleet.path[newFleet.pathIndex];
+              newFleet._to = newFleet.path[newFleet.pathIndex+1];
+              newFleet.moving = true;
+              newFleet.progress = 0;
+            } else {
+              newFleet._from = null; newFleet._to = null; newFleet.moving = false; newFleet.progress = 0;
+            }
+          } else {
+            // fallback: carry over previous movement fields
+            newFleet.pathIndex = f.pathIndex || 0;
+            newFleet._from = f._from; newFleet._to = f._to; newFleet.moving = f.moving; newFleet.progress = f.progress || 0;
+          }
+          // carry over persistent flags like autoCapture
+          if(f.autoCapture) newFleet.autoCapture = Object.assign({}, f.autoCapture);
+        }
+      } catch(e){ /* ignore transfer errors */ }
       G.fleets.push(newFleet);
       // If the winner isn't the system owner, attempt to capture the system using remaining strength vs system defense
       if(node.owner !== s.owner){
@@ -710,9 +792,60 @@ function setupUI(){
   document.getElementById('buildOutpost').addEventListener('click', ()=> buildBuildingCommand('outpost'));
   document.getElementById('buildFleet').addEventListener('click', ()=> buildFleetCommand());
   document.getElementById('sendFleet').addEventListener('click', ()=>{ if(G.selectedFleets.length>0){ G.sendMode = true; document.getElementById('sendFleet').textContent = 'Click destination'; } else alert('Select some fleets by dragging a box over them first.'); });
-  document.getElementById('autoCapture').addEventListener('click', ()=>{ if(G.selectedFleets.length>0){ autoCaptureSelectedFleets(); } else alert('Select some fleets by dragging a box over them first.'); });
+  document.getElementById('autoCapture').addEventListener('click', ()=>{
+    if(G.selectedFleets.length===0){ alert('Select some fleets by dragging a box over them first.'); return; }
+    const includeNeutral = document.getElementById('acIncludeNeutral').checked;
+    const includeAI = document.getElementById('acIncludeAI').checked;
+    // mark selected fleets as auto-capture and send an initial path
+    autoCaptureSelectedFleets(includeNeutral, includeAI);
+  });
+
+  document.getElementById('stopAutoCapture').addEventListener('click', ()=>{
+    if(G.selectedFleets.length===0){ alert('Select some fleets by dragging a box over them first.'); return; }
+    stopAutoCaptureSelectedFleets();
+  });
 
   document.getElementById('zoomSlider').addEventListener('input', (e)=>{ G.view.scale = parseFloat(e.target.value); draw(); });
+
+  // Dev console wiring
+  const devRun = document.getElementById('devConsoleRun');
+  const devClear = document.getElementById('devConsoleClear');
+  const devExample = document.getElementById('devConsoleFillExample');
+  const devInput = document.getElementById('devConsoleInput');
+  const devOut = document.getElementById('devConsoleOutput');
+  function devLog(msg){ devOut.textContent = (devOut.textContent ? devOut.textContent + '\n' : '') + msg; devOut.scrollTop = devOut.scrollHeight; }
+  devRun.addEventListener('click', ()=>{ const cmd = devInput.value.trim(); if(!cmd) return; try{ const res = runDevCommand(cmd); devLog('> ' + cmd); devLog(String(res)); } catch(e){ devLog('Error: ' + e.message); } devInput.value=''; });
+  devClear.addEventListener('click', ()=>{ devOut.textContent=''; });
+  devExample.addEventListener('click', ()=>{ devInput.value = 'credits 1000\nspawn 5 1 3\nspawn 8 2 4\nlist systems'; });
+
+  // UI toggle wiring
+  const uiBtn = document.getElementById('uiToggleBtn');
+  const uiPanel = document.getElementById('uiTogglePanel');
+  const chkLeft = document.getElementById('toggleLeftPane');
+  const chkDev = document.getElementById('toggleDevConsole');
+  const chkHUD = document.getElementById('toggleHUD');
+  const chkFooter = document.getElementById('toggleFooter');
+
+  function applyToggles(){
+    document.getElementById('leftPane').style.display = chkLeft.checked ? 'block' : 'none';
+    document.getElementById('devConsolePanel').style.display = chkDev.checked ? 'block' : 'none';
+    document.getElementById('hud').style.display = chkHUD.checked ? (G.running ? 'block':'none') : 'none';
+    document.getElementById('footer').style.display = chkFooter.checked ? (G.running ? 'block' : 'none') : 'none';
+    // resize canvas in case layout changed (small timeout so DOM recomputes)
+    setTimeout(()=>{ try{ resize(); }catch(e){ if(G.canvas) draw(); } }, 80);
+  }
+  uiBtn.addEventListener('click', ()=>{ uiPanel.style.display = uiPanel.style.display === 'none' ? 'block' : 'none'; setTimeout(()=>{ try{ resize(); }catch(e){ if(G.canvas) draw(); } }, 40); });
+  chkLeft.addEventListener('change', applyToggles);
+  chkDev.addEventListener('change', applyToggles);
+  chkHUD.addEventListener('change', applyToggles);
+  chkFooter.addEventListener('change', applyToggles);
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'u' || e.key === 'U'){
+      uiPanel.style.display = uiPanel.style.display === 'none' ? 'block' : 'none';
+      e.preventDefault();
+    }
+  });
 
   // canvas interactions (pan/right-drag, left drag selection)
   let isRightDown=false, lastX=0,lastY=0; let isLeftDown=false;
@@ -879,33 +1012,51 @@ function buildBuildingCommand(type){
   const s = G.selectedSystem;
   if(!s){ alert('Select a system'); return; }
   if(s.owner !== 1){ alert('You must control the system to build here'); return; }
-  const cost = (type==='mine'?100 : type==='shipyard'?300 : 2500);
-  if(G.players[1].credits < cost){ alert('Not enough credits'); return; }
+  const countInput = document.getElementById('buildCount');
+  const count = countInput ? Math.max(1, Math.floor(Number(countInput.value) || 1)) : 1;
+  const costPer = (type==='mine'?100 : type==='shipyard'?300 : 2500);
+  const totalCost = costPer * count;
+  if(G.players[1].credits < totalCost){ alert('Not enough credits for ' + count + ' ' + type + (count>1? 's':'')); return; }
   if(type==='mine') {
     // Count built and queued mines
     const built = s.mines || 0;
     const queued = s.queue.filter(q => q.type === 'mine').length;
-    if (built + queued >= 3) { alert('System already has maximum mines (3)'); return; }
+    if (built + queued + count > 3) { alert('Too many mines requested; max per system is 3 including queued.'); return; }
   }
   if(type==='shipyard' && s.buildings.shipyard){ alert('Shipyard already present'); return; }
   if(type==='outpost') {
     // Count built and queued outposts
     const built = s.buildings.outposts || 0;
     const queued = s.queue.filter(q => q.type === 'outpost').length;
-    if (built + queued >= 2) { alert('System already has maximum outposts (2)'); return; }
+    if (built + queued + count > 2) { alert('Too many outposts requested; max per system is 2 including queued.'); return; }
   }
-  G.players[1].credits -= cost;
-  s.queue.push({type:type, timeLeft:45, total:45, owner:1});
+  // Enforce one shipyard total: do not allow queuing more than one shipyard if one is built or already queued
+  if(type === 'shipyard'){
+    const hasBuilt = !!s.buildings.shipyard;
+    const queuedShipyards = s.queue.filter(q => q.type === 'shipyard').length;
+    if(hasBuilt || queuedShipyards > 0){ alert('A shipyard is already present or queued at this system. Only one allowed.'); return; }
+  }
+
+  G.players[1].credits -= totalCost;
+  // queue the requested number of tasks (each with the same timeLeft)
+  for(let i=0;i<count;i++){
+    s.queue.push({type:type, timeLeft:45, total:45, owner:1});
+  }
   updateSelectionUI();
 }
 function buildFleetCommand(){
   const s = G.selectedSystem;
   if(!s || s.owner !== 1){ alert('Select a system you control'); return; }
   if(!s.buildings.shipyard){ alert('You need a shipyard here to build fleets'); return; }
-  const cost = 150;
-  if(G.players[1].credits < cost){ alert('Not enough credits'); return; }
-  G.players[1].credits -= cost;
-  s.queue.push({type:'fleet', timeLeft:12, total:12, owner:1, strength:1});
+  const countInput = document.getElementById('buildCount');
+  const count = countInput ? Math.max(1, Math.floor(Number(countInput.value) || 1)) : 1;
+  const costPer = 150;
+  const totalCost = costPer * count;
+  if(G.players[1].credits < totalCost){ alert('Not enough credits to build ' + count + ' fleet(s)'); return; }
+  G.players[1].credits -= totalCost;
+  for(let i=0;i<count;i++){
+    s.queue.push({type:'fleet', timeLeft:12, total:12, owner:1, strength:1});
+  }
   updateSelectionUI();
 }
 
@@ -950,36 +1101,60 @@ function sendFleetAlong(f, path){
    The algorithm: greedily extend path choosing the weakest adjacent unowned system until
    the next system's defense >= fleet.strength (i.e., would destroy if attacked next).
 */
-function autoCaptureSelectedFleets(){
+function autoCaptureSelectedFleets(includeNeutral = true, includeAI = true){
+  const stopIfSuicidal = document.getElementById('acStopIfSuicidal') ? document.getElementById('acStopIfSuicidal').checked : true;
   for(let f of G.selectedFleets.slice()){
-    if(!f || f.moving) continue;
-    const line = findWeakestClosestLine(f.currentNode, f.owner);
-    if(line && line.length>1){
-      // Ensure last hop won't be suicidal
-      let safeIndex = 0;
-      let simulatedStrength = f.strength;
-      // step through hops: when encountering a hostile/neutral system, check defense
-      for(let i=1;i<line.length;i++){
-        const node = line[i];
-        if(node.owner !== f.owner){
-          if(simulatedStrength > node.defense){
-            simulatedStrength = Math.max(1, Math.round(simulatedStrength - node.defense));
-            safeIndex = i;
-          } else {
-            break; // next attack would lose fleet
-          }
-        }
-      }
-      const safePath = line.slice(0, safeIndex+1);
-      if(safePath.length>1) sendFleetAlong(f, safePath);
-    }
+    if(!f) continue;
+    // set a persistent autoCapture flag on the fleet so it will continue after each capture
+    f.autoCapture = { includeNeutral: !!includeNeutral, includeAI: !!includeAI, stopIfSuicidal: !!stopIfSuicidal };
+    // if fleet is idle, send an initial path
+    if(f.moving) continue;
+    const fullPath = findWeakestClosestLine(f.currentNode, f.owner, includeNeutral, includeAI);
+    if(!fullPath || fullPath.length <= 1) continue;
+    // build a path applying suicidal rules
+    const built = buildAutoCapturePath(fullPath, f.strength, f.owner, stopIfSuicidal);
+    if(built && built.length > 1){ sendFleetAlong(f, built); }
   }
-  // clear selection after issuing orders
-  G.selectedFleets = [];
   updateSelectionUI(); draw();
 }
 
-function findWeakestClosestLine(startNode, owner){
+function stopAutoCaptureSelectedFleets(){
+  for(let f of G.selectedFleets.slice()){
+    if(f && f.autoCapture) delete f.autoCapture;
+  }
+  updateSelectionUI(); draw();
+}
+
+function buildAutoCapturePath(path, startStrength, owner, stopIfSuicidal){
+  // path: array of nodes starting with current node; startStrength is the fleet's strength.
+  let simulated = startStrength;
+  const res = [path[0]];
+  for(let i=1;i<path.length;i++){
+    const n = path[i];
+    if(n.owner === owner){
+      // friendly node — just traverse
+      res.push(n); continue;
+    }
+    // enemy or neutral
+    if(simulated > n.defense){
+      // can capture and proceed
+      simulated = Math.max(1, Math.round(simulated - n.defense));
+      res.push(n);
+      continue;
+    } else {
+      // would be destroyed
+      if(stopIfSuicidal) break;
+      else {
+        // allow suicidal attack: include this node and stop after it (fleet will be removed)
+        res.push(n);
+        break;
+      }
+    }
+  }
+  return res;
+}
+
+function findWeakestClosestLine(startNode, owner, includeNeutral = true, includeAI = true){
   // BFS outward but prefer nodes with low defense and that are closer.
   // We'll collect candidate paths up to a small depth (e.g., 8) and score them.
   const maxDepth = 8;
@@ -993,9 +1168,25 @@ function findWeakestClosestLine(startNode, owner){
       // score path: average defense of hostile systems along it weighted by distance
       let defenseSum = 0, hostileCount = 0;
       for(let i=1;i<path.length;i++){ const n=path[i]; if(n.owner !== owner){ defenseSum += n.defense; hostileCount++; } }
+      // If hostileCount is zero or hosts are not allowed by flags then skip
+      if(hostileCount === 0){
+        // If we only allow neutral and this path contains only AI (or vice versa) we should skip later
+      }
       const avgDef = hostileCount? (defenseSum/hostileCount) : 0;
-      const score = (avgDef + hostileCount*0.5) + (path.length*0.1); // lower is better
-      paths.push({path, score, avgDef, hostileCount});
+      // Determine if this path's hostile nodes are allowed by includeNeutral/includeAI
+      let allowedHostileCount = 0;
+      for(let i=1;i<path.length;i++){
+        const n = path[i];
+        if(n.owner === owner) continue;
+        if(n.owner === 0 && includeNeutral) allowedHostileCount++;
+        else if(n.owner > 1 && includeAI) allowedHostileCount++;
+      }
+      if(allowedHostileCount === 0) {
+        // nothing in this path matches the allowed target set
+      } else {
+        const score = (avgDef + hostileCount*0.5) + (path.length*0.1); // lower is better
+        paths.push({path, score, avgDef, hostileCount, allowedHostileCount});
+      }
     }
     if(path.length-1 >= maxDepth) continue;
     for(let nb of last.connected){
@@ -1011,6 +1202,36 @@ function findWeakestClosestLine(startNode, owner){
   viable.sort((a,b)=> a.score - b.score);
   // prefer the path whose first hostile node is closest
   return viable[0].path;
+}
+
+/* ===== Dev Console Commands ===== */
+function runDevCommand(raw){
+  // Accept multiple commands separated by newline
+  const lines = raw.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  let out = [];
+  for(const line of lines){
+    const parts = line.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    try{
+      if(cmd === 'credits'){ const amt = Number(parts[1]||0); if(!G.players[1]) throw new Error('Player not initialized'); G.players[1].credits = amt; out.push('Player credits set to ' + amt); }
+      else if(cmd === 'income'){ const amt = Number(parts[1]||0); if(!G.players[1]) throw new Error('Player not initialized'); G.players[1].income = amt; out.push('Player income set to ' + amt); }
+      else if(cmd === 'spawn'){ // spawn <systemId> <owner> <strength>
+        const sid = Number(parts[1]); const owner = Number(parts[2]||1); const strength = Number(parts[3]||1);
+        const sys = G.systems.find(s=>s.id===sid) || G.systems[Math.floor(Math.random()*G.systems.length)];
+        if(!sys) throw new Error('No systems available');
+        const f = new Fleet(G.nextFleetId++, owner, Math.max(1, Math.round(strength)), sys);
+        G.fleets.push(f);
+        out.push('Spawned fleet id=' + f.id + ' owner=' + owner + ' strength=' + f.strength + ' at system ' + sys.id);
+      }
+      else if(cmd === 'list'){ const sub = parts[1] ? parts[1].toLowerCase() : 'systems'; if(sub === 'systems'){ out.push('Systems:'); for(const s of G.systems.slice(0,100)){ out.push(`id=${s.id} owner=${s.owner} def=${s.defense} prod=${s.baseProd.toFixed(1)}`); } } else if(sub === 'fleets'){ out.push('Fleets:'); for(const f of G.fleets){ out.push(`id=${f.id} owner=${f.owner} str=${f.strength} node=${f.currentNode?f.currentNode.id:'-'} moving=${f.moving}`); } } else out.push('Unknown list target'); }
+      else if(cmd === 'setowner'){ const sid = Number(parts[1]); const owner = Number(parts[2]||0); const s = G.systems.find(x=>x.id===sid); if(!s) throw new Error('system not found'); s.owner = owner; out.push('system '+sid+' owner set to '+owner); }
+      else if(cmd === 'clearfleets'){ G.fleets=[]; out.push('All fleets removed'); }
+      else if(cmd === 'tick'){ const t = Number(parts[1]||1); for(let i=0;i<t;i++) tick(1); out.push('Advanced ' + t + 's'); }
+      else if(cmd === 'help'){ out.push('Commands: credits <n>, income <n>, spawn <sysId?> <owner> <str>, list systems|fleets, setowner <sysId> <owner>, clearfleets, tick <seconds>, help'); }
+      else out.push('Unknown command: ' + cmd + ' (type help)');
+    } catch(e){ out.push('Error: ' + e.message); }
+  }
+  updateSelectionUI(); draw(); return out.join('\n');
 }
 
 /* ===== Drawing ===== */
