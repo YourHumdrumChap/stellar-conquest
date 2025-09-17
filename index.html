@@ -552,16 +552,16 @@ function applyBuilt(system, task){
     system.mines = (system.mines || 0) + 1;
     const bonus = randDecimal(G.rng, 0.1, 1.0); // mine per-spec
     system.mineBonus = (system.mineBonus || 0) + bonus;
-    system.defense = (system.defense || 0) + 3; // mine adds 3 defense
+    system.defense = (system.defense || 0) + 1; // mine adds 1 defense
   }
   else if(task.type==='shipyard'){
     system.buildings.shipyard = true;
-    system.defense = (system.defense || 0) + 7; // shipyard adds 7 defense
+    system.defense = (system.defense || 0) + 3; // shipyard adds 7 defense
   }
   else if(task.type==='outpost'){
     if(system.buildings.outposts === undefined) system.buildings.outposts = 0;
     system.buildings.outposts++;
-    system.defense = (system.defense || 0) + 10;
+    system.defense = (system.defense || 0) + 7; // outpost adds 7 defense
   }
   else if(task.type==='fleet'){
     const fleet = new Fleet(G.nextFleetId++, task.owner, task.strength || 1, system);
