@@ -743,59 +743,76 @@ function removeFleet(f){
 }
 
 /* ===== AI ===== */
+
 function aiTick(dt){
-  // Simplified AI to reduce CPU cost:
-  // - Lower think frequency (per-AI timer)
-  // - Only look one hop out for movement targets (no deep BFS)
-  // - Minimal build decisions, fewer array scans
+  // Simplified AI with corrected build policy:
+  // - AIs may only queue fleets on systems that already have a shipyard or have a shipyard queued.
+  // - If the AI has no shipyards anywhere, it will occasionally queue a shipyard (so fleets can be produced later).
   if(!G._aiTimers) G._aiTimers = {};
   for(let pid in G.players){
     const p = G.players[pid];
     if(!p.isAI) continue;
     if(!G._aiTimers[pid]) G._aiTimers[pid] = 0;
     G._aiTimers[pid] += dt;
-    // Think rarely: base 1.2s, faster at higher difficulty but clamped
+    // Think frequency scaled by difficulty (clamped)
     const think = clamp(1.2 / (p.difficulty || 1.0), 0.4, 4.0);
     if(G._aiTimers[pid] < think) continue;
     G._aiTimers[pid] = 0;
 
-    // Minimal caches to avoid repeated filters
+    // gather owned systems & fleets (cheap linear scan)
     const mySystems = [];
     const myFleets = [];
     for(const s of G.systems){ if(s.owner == pid) mySystems.push(s); }
     for(const f of G.fleets){ if(f.owner == pid) myFleets.push(f); }
 
-    // Simple building logic: if credit threshold met, build one fleet or mine occasionally
-    if(p.credits >= 150 && mySystems.length > 0 && G.rng() < 0.25){
-      // pick a random shipyard-capable system (prefer existing shipyard)
-      let yard = mySystems.find(s=>s.buildings.shipyard);
-      if(!yard) yard = mySystems[Math.floor(G.rng()*mySystems.length)];
-      if(yard){ p.credits -= 150; yard.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength: Math.max(1, Math.round(G.rng()*2 + (p.difficulty||1)))}); }
-    }
+    // 1) Mines: keep resource growth
     if(p.credits >= 100 && mySystems.length > 0 && G.rng() < 0.18){
+      // pick a random owned system
       const s = mySystems[Math.floor(G.rng()*mySystems.length)];
-      const built = s.mines || 0; const queued = s.queue ? s.queue.filter(q=>q.type==='mine').length : 0;
-      if(built + queued < 3){ p.credits -= 100; s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid}); }
+      const built = s.mines || 0;
+      const queued = s.queue ? s.queue.filter(q=>q.type==='mine').length : 0;
+      if(built + queued < 3){
+        p.credits -= 100;
+        s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid});
+      }
     }
 
-    // Movement: for each idle fleet, look at adjacent nodes only and attack the weakest allowable neighbor.
+    // 2) Fleets: ONLY build fleets at systems that either already have a shipyard or have a shipyard queued.
+    if(p.credits >= 150 && mySystems.length > 0 && G.rng() < 0.25){
+      // prefer an already-built shipyard
+      let yard = mySystems.find(s => s.buildings && s.buildings.shipyard);
+      // if none built, prefer a system that has a shipyard queued (fleet will be built after that shipyard finishes)
+      if(!yard) yard = mySystems.find(s => s.queue && s.queue.some(q => q.type === 'shipyard'));
+      if(yard){
+        p.credits -= 150;
+        yard.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength: Math.max(1, Math.round(G.rng()*2 + (p.difficulty||1)))});
+      } else {
+        // 3) If AI has no shipyards at all, attempt to queue a shipyard (with a modest chance).
+        // This prevents the AI from never being able to produce fleets while still avoiding spawning fleets where
+        // shipyards don't exist.
+        if(p.credits >= 300 && G.rng() < 0.35){
+          const candidate = mySystems.find(s => !(s.buildings && s.buildings.shipyard) && !(s.queue && s.queue.some(q=>q.type==='shipyard')));
+          if(candidate){
+            p.credits -= 300;
+            candidate.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid});
+          }
+        }
+      }
+    }
+
+    // 4) Movement: for each idle fleet, attack a reasonable adjacent target (unchanged behavior)
     for(const f of myFleets){
       if(!f || f.moving || !f.currentNode) continue;
-      // look at adjacent neighbors only (cheap)
       let best = null; let bestScore = Infinity;
       for(const nb of f.currentNode.connected){
         if(!nb) continue;
-        if(nb.owner == pid) continue; // skip owned
-        // respect simple target flags: attack neutrals and players/AIs
-        // score: defense + distance small weight
+        if(nb.owner == pid) continue;
         const score = nb.defense + 0.001 * dist(f.currentNode, nb);
         if(score < bestScore){ bestScore = score; best = nb; }
       }
       if(best){
-        // only attack if a reasonable chance (fleet strength > defense * factor depending on difficulty)
         const required = Math.max(1, Math.round(best.defense * (0.9 + 0.25*(1/p.difficulty))));
         if(f.strength > required || G.rng() < 0.06){
-          // send to neighbor directly
           const path = [f.currentNode, best];
           sendFleetAlong(f, path);
         }
@@ -803,6 +820,7 @@ function aiTick(dt){
     }
   }
 }
+
 
 function findNearestTarget(node, owner){
   let best=null, bd=Infinity;
