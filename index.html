@@ -223,6 +223,7 @@ class SystemNode{
     this.mineBonus=0;     // total extra production from mines
     this.buildings={shipyard:false, outposts:0}; // shipyard + outposts
     this.queue=[];
+    this.initialDefense = 0;
     this.connected=[];
   }
 }
@@ -351,6 +352,8 @@ function generateGalaxy(settings){
       // production: normal systems 0.1 - 5.0 (tenths)
       sys.baseProd = randDecimal(rng, 0.1, 5.0);
       sys.defense = randDecimal(rng, 0.1, 2.0);
+    s.initialDefense = s.defense;
+      sys.initialDefense = sys.defense;
       G.systems.push(sys);
       G.sectors[i].systems.push(sys);
     }
@@ -385,6 +388,7 @@ function generateGalaxy(settings){
   // make starting system a bit stronger and with production between 0.1 and 10
   playerStart.owner = 1;
   playerStart.defense = randDecimal(rng, 0.1, 2.0);
+  playerStart.initialDefense = playerStart.defense;
   playerStart.baseProd = randDecimal(rng, 0.1, 10.0);
   const cityBonus = randDecimal(rng, 0.1, 2.5);
   playerStart.baseProd = Math.round((playerStart.baseProd + cityBonus)*10)/10;
@@ -405,6 +409,7 @@ function generateGalaxy(settings){
     const s = availableStarts.splice(pick,1)[0];
     s.owner = pid;
     s.defense = randDecimal(rng, 0.1, 2.0);
+    s.initialDefense = s.defense;
     s.baseProd = Math.max(0.1, s.baseProd + randDecimal(rng, 0.1, 5.0));
   }
 
@@ -456,6 +461,48 @@ function recalcIncome(){
     }
   }
 }
+
+
+/* ===== Conquest handler: When a system is taken by a new owner =====
+   - Destroys all buildings (mines, shipyards, outposts)
+   - Cancels and clears the build queue immediately
+   - Resets the system defense to its original starting defense (recorded at game start)
+   - Recalculates incomes and updates selection UI if needed
+*/
+function onConquerSystem(system, newOwner){
+  try{
+    if(!system) return;
+    // Destroy buildings
+    system.mines = 0;
+    system.mineBonus = 0;
+    if(!system.buildings) system.buildings = {shipyard:false, outposts:0};
+    system.buildings.shipyard = false;
+    system.buildings.outposts = 0;
+
+    // Cancel/clear any build queues immediately
+    if(system.queue && system.queue.length){
+      // For visibility in dev console
+      console.debug('onConquerSystem: clearing queue for system', system.id, system.name, 'oldQueueLen=', system.queue.length);
+      system.queue = [];
+    }
+
+    // Reset defense to the original starting defense recorded at game start
+    if(system.initialDefense !== undefined && system.initialDefense !== null){
+      system.defense = system.initialDefense;
+    } else {
+      // fallback if initial was not recorded for some reason
+      system.defense = 0;
+    }
+
+    // Ensure owner is set (caller should set owner before calling this, but be safe)
+    if(newOwner !== undefined) system.owner = newOwner;
+
+    // Update incomes and UI to reflect loss of mines/outposts
+    recalcIncome();
+    if(G.selectedSystem === system) updateSelectionUI();
+  } catch(e){ console.error('onConquerSystem error', e); }
+}
+
 
 /* ===== Game Loop & Logic ===== */
 function tick(dt){
@@ -674,7 +721,7 @@ function resolveArrival(f){
           // capture: subtract defense from fleet
           newFleet.strength = Math.max(1, newFleet.strength - node.defense);
           node.owner = s.owner;
-          node.defense = 0;
+          onConquerSystem(node, s.owner);
         } else {
           // fleet fails to capture; reduce defense and remove fleet
           node.defense = Math.max(0, node.defense - newFleet.strength);
@@ -704,7 +751,7 @@ function resolveArrival(f){
   if(f.strength > node.defense){
     const leftover = f.strength - node.defense;
     node.owner = f.owner;
-    node.defense = 0;
+    onConquerSystem(node, f.owner);
     f.strength = Math.max(1, Math.round(leftover));
     recalcIncome();
     return true;
