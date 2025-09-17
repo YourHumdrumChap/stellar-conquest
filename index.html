@@ -727,109 +727,63 @@ function removeFleet(f){
 
 /* ===== AI ===== */
 function aiTick(dt){
-  // Pace AI actions so each AI performs at most one new 'task' at a time.
-  // Tasks include queued builds and fleets already moving toward hostile targets.
-  // Use a per-player timestamp (`p._nextAiActionAt`) derived from `p.difficulty` so harder AIs act more often.
+  // Simplified AI to reduce CPU cost:
+  // - Lower think frequency (per-AI timer)
+  // - Only look one hop out for movement targets (no deep BFS)
+  // - Minimal build decisions, fewer array scans
+  if(!G._aiTimers) G._aiTimers = {};
   for(let pid in G.players){
     const p = G.players[pid];
     if(!p.isAI) continue;
+    if(!G._aiTimers[pid]) G._aiTimers[pid] = 0;
+    G._aiTimers[pid] += dt;
+    // Think rarely: base 1.2s, faster at higher difficulty but clamped
+    const think = clamp(1.2 / (p.difficulty || 1.0), 0.4, 4.0);
+    if(G._aiTimers[pid] < think) continue;
+    G._aiTimers[pid] = 0;
 
-    // initialize per-player next-action timestamp
-    if(p._nextAiActionAt === undefined) p._nextAiActionAt = 0;
+    // Minimal caches to avoid repeated filters
+    const mySystems = [];
+    const myFleets = [];
+    for(const s of G.systems){ if(s.owner == pid) mySystems.push(s); }
+    for(const f of G.fleets){ if(f.owner == pid) myFleets.push(f); }
 
-    const mySystems = G.systems.filter(s => s.owner == pid);
-    const myFleets = G.fleets.filter(f => f.owner == pid);
-
-    // Count currently active tasks: queued builds + fleets already moving toward at least one non-owned node
-    const queuedTasks = mySystems.reduce((acc,s)=> acc + (s.queue ? s.queue.length : 0), 0);
-    const movingAttackFleets = G.fleets.filter(f => f.owner == pid && f.moving && f.path && f.path.some(n => n.owner != pid)).length;
-    const active = queuedTasks + movingAttackFleets;
-
-    // Compute base interval from difficulty so the hardest AI acts roughly every ~1s, easiest much slower.
-    // Difficulty UI ranges from ~0.6 .. 2.2 — map that range to 3.5s .. 1.0s per action.
-    const minDiff = 0.6, maxDiff = 2.2;
-    const t = clamp(((p.difficulty || 1) - minDiff) / (maxDiff - minDiff), 0, 1);
-    const baseInterval = lerp(3.5, 1.0, t);
-
-    // If it's not yet time for this AI to perform a new action, skip.
-    if(G.time < p._nextAiActionAt) continue;
-
-    // Only allow starting a new task when there are no active tasks (enforce single active task)
-    if(active > 0){
-      // postpone next attempt a little so we don't spin the loop every tick
-      p._nextAiActionAt = G.time + Math.min(0.8, baseInterval * 0.5);
-      continue;
+    // Simple building logic: if credit threshold met, build one fleet or mine occasionally
+    if(p.credits >= 150 && mySystems.length > 0 && G.rng() < 0.25){
+      // pick a random shipyard-capable system (prefer existing shipyard)
+      let yard = mySystems.find(s=>s.buildings.shipyard);
+      if(!yard) yard = mySystems[Math.floor(G.rng()*mySystems.length)];
+      if(yard){ p.credits -= 150; yard.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength: Math.max(1, Math.round(G.rng()*2 + (p.difficulty||1)))}); }
+    }
+    if(p.credits >= 100 && mySystems.length > 0 && G.rng() < 0.18){
+      const s = mySystems[Math.floor(G.rng()*mySystems.length)];
+      const built = s.mines || 0; const queued = s.queue ? s.queue.filter(q=>q.type==='mine').length : 0;
+      if(built + queued < 3){ p.credits -= 100; s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid}); }
     }
 
-    // At this point the AI is allowed to start exactly one task. We'll pick the highest-priority action
-    // available and perform exactly one action here, then set the next action time.
-    let acted = false;
-
-    // helper: schedule cooldown with small random variation (+/- ~20%)
-    function scheduleCooldown(){
-      const variation = (G.rng() - 0.5) * 0.4; // -0.2 .. +0.2
-      p._nextAiActionAt = G.time + Math.max(0.25, baseInterval * (1 + variation));
-    }
-
-    // 1) Prioritize shipyard construction on high-production systems
-    if(!acted && p.credits >= 300){
-      const candidates = mySystems.filter(s => !s.buildings.shipyard && s.queue.filter(q=>q.type==='shipyard').length===0);
-      candidates.sort((a,b) => (b.baseProd || 0) - (a.baseProd || 0));
-      if(candidates.length && G.rng() < 0.45){ const s = candidates[0]; p.credits -= 300; s.queue.push({type:'shipyard', timeLeft:45, total:45, owner:pid}); acted = true; scheduleCooldown(); }
-    }
-
-    // 2) Build an opportunistic mine on a good system (respect cap 3)
-    if(!acted && p.credits >= 100 && G.rng() < 0.6){
-      const sysByProd = mySystems.slice().sort((a,b)=> (b.baseProd||0) - (a.baseProd||0));
-      for(const s of sysByProd){
-        const built = s.mines || 0;
-        const queued = s.queue.filter(q=>q.type==='mine').length;
-        if(built + queued < 3 && p.credits >= 100){ p.credits -= 100; s.queue.push({type:'mine', timeLeft:45, total:45, owner:pid}); acted = true; scheduleCooldown(); break; }
+    // Movement: for each idle fleet, look at adjacent nodes only and attack the weakest allowable neighbor.
+    for(const f of myFleets){
+      if(!f || f.moving || !f.currentNode) continue;
+      // look at adjacent neighbors only (cheap)
+      let best = null; let bestScore = Infinity;
+      for(const nb of f.currentNode.connected){
+        if(!nb) continue;
+        if(nb.owner == pid) continue; // skip owned
+        // respect simple target flags: attack neutrals and players/AIs
+        // score: defense + distance small weight
+        const score = nb.defense + 0.001 * dist(f.currentNode, nb);
+        if(score < bestScore){ bestScore = score; best = nb; }
+      }
+      if(best){
+        // only attack if a reasonable chance (fleet strength > defense * factor depending on difficulty)
+        const required = Math.max(1, Math.round(best.defense * (0.9 + 0.25*(1/p.difficulty))));
+        if(f.strength > required || G.rng() < 0.06){
+          // send to neighbor directly
+          const path = [f.currentNode, best];
+          sendFleetAlong(f, path);
+        }
       }
     }
-
-    // 3) Produce a fleet if there's a shipyard
-    if(!acted && p.credits >= 150){
-      const shipyards = mySystems.filter(s => s.buildings.shipyard || s.queue.some(q=>q.type==='shipyard'));
-      if(shipyards.length && G.rng() < 0.8){
-        const s = choice(G.rng, shipyards);
-        const strength = Math.max(1, Math.round(G.rng()*2 + (p.difficulty || 1)));
-        p.credits -= 150;
-        s.queue.push({type:'fleet', timeLeft:12, total:12, owner:pid, strength});
-        acted = true; scheduleCooldown();
-      }
-    }
-
-    // 4) Occasional outpost if very wealthy
-    if(!acted && p.credits >= 2500 && G.rng() < 0.07){
-      const cand = mySystems.slice().sort((a,b)=> (b.baseProd||0) - (a.baseProd||0));
-      for(const s of cand){ const built = s.buildings.outposts || 0; const queued = s.queue.filter(q=>q.type==='outpost').length; if(built + queued < 2){ p.credits -= 2500; s.queue.push({type:'outpost', timeLeft:45, total:45, owner:pid}); acted = true; scheduleCooldown(); break; } }
-    }
-
-    // 5) Movement / attacks: try to send a single fleet along a promising path
-    if(!acted){
-      const idleFleets = myFleets.filter(f => !f.moving && f.currentNode);
-      const groups = new Map();
-      for(const f of idleFleets){ const key = f.currentNode.id; if(!groups.has(key)) groups.set(key, []); groups.get(key).push(f); }
-      // iterate grouped fleets and try to send one fleet from the best group
-      const groupEntries = Array.from(groups.entries()).sort((a,b)=> b[1].reduce((s,f)=>s+f.strength,0) - a[1].reduce((s,f)=>s+f.strength,0));
-      for(const [nodeId, fleetsAtNode] of groupEntries){
-        if(fleetsAtNode.length === 0) continue;
-        fleetsAtNode.sort((a,b)=> b.strength - a.strength);
-        const leader = fleetsAtNode[0];
-        const path = findWeakestClosestLine(leader.currentNode, pid, true, true);
-        if(!path || path.length <= 1) continue;
-        const stopIfSuicidal = !(p.difficulty > 1.5 && G.rng() < 0.4);
-        const builtPath = buildAutoCapturePath(path, Math.max(1, Math.round(leader.strength)), pid, stopIfSuicidal);
-        if(!builtPath || builtPath.length <= 1) continue;
-        // send just one strong fleet (leader) to respect single-task pacing
-        if(!leader.moving){ sendFleetAlong(leader, builtPath); acted = true; scheduleCooldown(); }
-        if(acted) break;
-      }
-    }
-
-    // If we didn't perform any action, still schedule a near-future retry to avoid busy-looping
-    if(!acted){ p._nextAiActionAt = G.time + Math.min(1.2, baseInterval * 0.5); }
   }
 }
 
@@ -1254,53 +1208,19 @@ function buildAutoCapturePath(path, startStrength, owner, stopIfSuicidal){
 }
 
 function findWeakestClosestLine(startNode, owner, includeNeutral = true, includeAI = true){
-  // BFS outward but prefer nodes with low defense and that are closer.
-  // We'll collect candidate paths up to a small depth (e.g., 8) and score them.
-  const maxDepth = 8;
-  const paths = [];
-  const q = [[startNode]]; // queue of paths
-  const visited = new Set([startNode.id]);
-  while(q.length){
-    const path = q.shift();
-    const last = path[path.length-1];
-    if(path.length>1){
-      // score path: average defense of hostile systems along it weighted by distance
-      let defenseSum = 0, hostileCount = 0;
-      for(let i=1;i<path.length;i++){ const n=path[i]; if(n.owner !== owner){ defenseSum += n.defense; hostileCount++; } }
-      // If hostileCount is zero or hosts are not allowed by flags then skip
-      if(hostileCount === 0){
-        // If we only allow neutral and this path contains only AI (or vice versa) we should skip later
-      }
-      const avgDef = hostileCount? (defenseSum/hostileCount) : 0;
-      // Determine if this path's hostile nodes are allowed by includeNeutral/includeAI
-      let allowedHostileCount = 0;
-      for(let i=1;i<path.length;i++){
-        const n = path[i];
-        if(n.owner === owner) continue;
-        if(n.owner === 0 && includeNeutral) allowedHostileCount++;
-        else if(n.owner > 1 && includeAI) allowedHostileCount++;
-      }
-      if(allowedHostileCount === 0) {
-        // nothing in this path matches the allowed target set
-      } else {
-        const score = (avgDef + hostileCount*0.5) + (path.length*0.1); // lower is better
-        paths.push({path, score, avgDef, hostileCount, allowedHostileCount});
-      }
-    }
-    if(path.length-1 >= maxDepth) continue;
-    for(let nb of last.connected){
-      if(path.some(p=>p===nb)) continue; // avoid cycles
-      q.push(path.concat([nb]));
-    }
+  // Lightweight helper: Instead of deep BFS, just return a two-node path [startNode, bestNeighbor]
+  // where bestNeighbor is the adjacent node with lowest defense that matches include flags.
+  let best = null; let bestScore = Infinity;
+  for(const nb of startNode.connected){
+    if(!nb) continue;
+    if(nb.owner === owner) continue;
+    if(nb.owner === 0 && !includeNeutral) continue;
+    if(nb.owner > 1 && !includeAI) continue;
+    const score = nb.defense + 0.001 * dist(startNode, nb);
+    if(score < bestScore){ bestScore = score; best = nb; }
   }
-  if(paths.length===0) return null;
-  // Filter to paths that start by moving toward an enemy/neutral system
-  const viable = paths.filter(p=>p.path.length>1 && p.hostileCount>0);
-  if(viable.length===0) return null;
-  // Sort by score then by distance from start
-  viable.sort((a,b)=> a.score - b.score);
-  // prefer the path whose first hostile node is closest
-  return viable[0].path;
+  if(!best) return null;
+  return [startNode, best];
 }
 
 /* ===== Dev Console Commands ===== */
@@ -1605,11 +1525,33 @@ function animateViewTo(tx, ty, tscale, duration = 0.8){
 }
 
 function stopGame(){
-  G.running = false; if(rafId) cancelAnimationFrame(rafId);
-  document.getElementById('menu').style.display='block';
-  document.getElementById('topBar').style.display='none';
-  document.getElementById('hud').style.display='none';
-  document.getElementById('footer').style.display='none';
+  // Defensive stop: cancel animation loop, clear AI timers, reset UI flags and selection
+  G.running = false;
+  try{ if(rafId) cancelAnimationFrame(rafId); }catch(e){ /* ignore */ }
+  rafId = null;
+
+  // Clear per-AI timers/state used by aiTick
+  if(G._aiTimers) G._aiTimers = {};
+  for(let pid in G.players){ if(G.players[pid]) G.players[pid]._nextAiActionAt = 0; }
+
+  // Reset user interaction modes
+  G.sendMode = false;
+  try{ const sendBtn = document.getElementById('sendFleet'); if(sendBtn) sendBtn.textContent = 'Send Fleet'; }catch(e){}
+  G.selectedFleets = [];
+  G.selectedSystem = null;
+
+  // Restore main menu & left UI panels so the player can reconfigure game
+  try{ document.getElementById('menu').style.display='block'; }catch(e){}
+  try{ document.getElementById('leftPane').style.display='block'; }catch(e){}
+  try{ document.getElementById('devConsolePanel').style.display='block'; }catch(e){}
+
+  // Hide in-game HUD elements
+  try{ document.getElementById('topBar').style.display='none'; }catch(e){}
+  try{ document.getElementById('hud').style.display='none'; }catch(e){}
+  try{ document.getElementById('footer').style.display='none'; }catch(e){}
+
+  // Force a redraw to reflect stopped state
+  try{ draw(); }catch(e){}
 }
 
 /* ===== Init ===== */
