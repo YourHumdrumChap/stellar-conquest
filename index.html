@@ -384,7 +384,7 @@ function generateGalaxy(settings){
   const playerStart = G.systems[0];
   // make starting system a bit stronger and with production between 0.1 and 10
   playerStart.owner = 1;
-  playerStart.defense = Math.max(playerStart.defense, 18);
+  playerStart.defense = randDecimal(rng, 0.1, 2.0);
   playerStart.baseProd = randDecimal(rng, 0.1, 10.0);
   const cityBonus = randDecimal(rng, 0.1, 2.5);
   playerStart.baseProd = Math.round((playerStart.baseProd + cityBonus)*10)/10;
@@ -404,7 +404,7 @@ function generateGalaxy(settings){
     const pick = Math.floor(rng()*availableStarts.length);
     const s = availableStarts.splice(pick,1)[0];
     s.owner = pid;
-    s.defense = Math.max(s.defense, 12);
+    s.defense = randDecimal(rng, 0.1, 2.0);
     s.baseProd = Math.max(0.1, s.baseProd + randDecimal(rng, 0.1, 5.0));
   }
 
