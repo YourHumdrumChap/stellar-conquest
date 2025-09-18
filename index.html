@@ -15,11 +15,11 @@
     input[type=range], input[type=number]{width:100%}
     select,button,input{width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
     button.primary{background:linear-gradient(90deg,var(--accent),#2ec4ff);color:#021022;border:none;font-weight:600}
-    #gameArea{flex:1;position:relative;border-radius:12px;overflow:hidaden;background:linear-gradient(180deg,#061122,#071426)}
+    #gameArea{flex:1;position:relative;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#061122,#071426)}
     #topBar{position:absolute;left:12px;top:12px;z-index:50;background:rgba(5,8,15,0.6);padding:8px;border-radius:8px;display:flex;gap:8px;align-items:center}
-    #alwaysStats{ /* replaced by new overlay */ }
+    #hud{position:absolute;right:12px;top:12px;z-index:50;background:rgba(5,8,15,0.6);padding:8px;border-radius:8px;min-width:260px}
   /* Ensure HUD controls receive pointer events even if canvas is underneath */
-  #alwaysStats, #systemPanel, #fleetPanel, #systemPanel * , #fleetPanel * { pointer-events: auto; }
+  #hud, #hud * { pointer-events: auto; }
     #canvasWrap{width:100%;height:100%;display:flex}
     canvas#gameCanvas{flex:1;display:block;cursor:crosshair}
     .panel{margin-top:12px;padding:10px;border-radius:8px;background:rgba(255,255,255,0.02)}
@@ -42,16 +42,12 @@
     #leaderboardPanel .lb-row{display:flex;justify-content:space-between;padding:6px;border-bottom:1px solid rgba(255,255,255,0.02);font-size:13px}
     #lbToggleBtn{position:fixed;right:18px;bottom:18px;z-index:121;background:linear-gradient(90deg,#ffd36b,#ff9f6b);color:#021022;padding:8px;border-radius:10px;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,0.5)}
   
-    /* New always-on stats and panels styling */
-    #alwaysStats { pointer-events: auto; display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
-    #systemPanel { pointer-events: auto; display:none; }
-    #fleetPanel { pointer-events: auto; display:none; }
-    /* Slight responsive tweak for system panel on small screens */
-    @media (max-width:900px){
-      #systemPanel { right:8px; left:8px; width:auto; }
-      #fleetPanel { left:8px; right:8px; width:auto; bottom:8px; }
-      #alwaysStats { right:8px; top:8px; }
-    }
+    /* Custom non-opaque but readable panels for system/fleet UIs */
+    #systemPanel, #fleetPanel { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+    #alwaysHUD { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+    #systemPanel .btnRow button, #fleetPanel .btnRow button, #systemPanel button, #fleetPanel button { padding:8px 10px; border-radius:8px; cursor:pointer; border: none; background: linear-gradient(90deg,var(--accent),#2ec4ff); color: #021022; }
+    #systemPanel input[type=number] { background: rgba(255,255,255,0.04); color:inherit; border:1px solid rgba(255,255,255,0.04); border-radius:6px; }
+    #buildQueue > div { padding:8px; background: rgba(255,255,255,0.02); border-radius:6px; margin-bottom:6px; }
     </style>
 </head>
 <body>
@@ -133,74 +129,64 @@
       </div>
 
       
-    <!-- Always-on stats + minimap (moved out of HUD; visible separately) -->
-    <div id="alwaysStats" style="position:fixed;right:12px;top:12px;z-index:200;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:auto;">
-      <div style="background:rgba(2,6,12,0.75);padding:8px;border-radius:10px;min-width:180px;box-shadow:0 6px 18px rgba(0,0,0,0.45);">
-        <div style="display:flex;justify-content:space-between;gap:8px">
-          <div class="small">Credits</div><div class="small" id="credits">0.0</div>
-        </div>
-        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:6px">
-          <div class="small">Income/sec</div><div class="small" id="income">0.0</div>
-        </div>
-        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:6px">
-          <div class="small">Time</div><div class="small" id="timeLabel">0s</div>
-        </div>
-      </div>
-
-      <!-- Small minimap (always visible) -->
-      <canvas id="minimap" width="200" height="120" style="border-radius:8px;background:rgba(0,0,0,0.12);box-shadow:0 6px 18px rgba(0,0,0,0.45)"></canvas>
+<div id="alwaysHUD" style="position:fixed; top:12px; right:12px; z-index:125; display:none; gap:12px; align-items:center; background: rgba(2,6,12,0.55); color:#dbe6ff; padding:10px; border-radius:10px; box-shadow:0 8px 20px rgba(0,0,0,0.5); display:flex; flex-direction:row;">
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+    <div class="small">Credits: <strong id="credits">0.0</strong></div>
+    <div class="small">Income/sec: <strong id="income">0.0</strong></div>
+    <div class="small">Time: <strong id="timeLabel">0s</strong></div>
+  </div>
+  <div style="margin-left:12px; display:flex; flex-direction:column; align-items:flex-end;">
+    <div class="small" style="margin-bottom:6px">Minimap</div>
+    <canvas id="minimap" width="200" height="120" style="border-radius:6px; background:rgba(0,0,0,0.12);"></canvas>
+    <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+      <div class="small">Zoom</div>
+      <input id="zoomSlider" type="range" min="0.3" max="2.5" step="0.05" value="1" style="width:110px"/>
     </div>
+  </div>
+</div>
 
-    <!-- System panel: opens only when a system is selected -->
-    <div id="systemPanel" class="panel" style="position:fixed;right:12px;top:170px;z-index:210;width:320px;display:none;box-shadow:0 12px 30px rgba(0,0,0,0.55)">
-      <div class="small" style="font-weight:600;margin-bottom:6px">System</div>
-      <div id="selectedName" class="systemInfo" style="font-size:15px;margin-bottom:6px">None</div>
-      <div id="selectedOwner" class="small"></div>
-      <div id="selectedIncome" class="small" style="margin-bottom:8px"></div>
+<!-- System Panel: shown only when a system is selected -->
+<div id="systemPanel" style="position:fixed; left:14px; bottom:14px; z-index:121; width:360px; display:none; background: rgba(2,6,12,0.55); color:#dbe6ff; padding:12px; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.6);">
+  <div class="small">Selected</div>
+  <div id="selectedName" class="systemInfo" style="font-weight:600;margin-top:6px">None</div>
+  <div id="selectedOwner" class="small"></div>
+  <div id="selectedIncome" class="small"></div>
 
-      <div class="btnRow" style="margin-top:8px">
-        <div style="flex:1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button id="buildMine">Build Mine (Cost: <span id="mineCost">100</span>)</button>
-          <button id="buildShipyard">Build Shipyard (Cost: <span id="yardCost">300</span>)</button>
-          <button id="buildOutpost">Build Outpost (Cost: <span id="outpostCost">2500</span>)</button>
-        </div>
-        <div style="width:90px;display:flex;flex-direction:column;align-items:center;justify-content:center">
-          <label class="small" style="margin:0;font-size:11px">Count</label>
-          <input id="buildCount" type="number" value="1" min="1" step="1" style="width:66px;padding:6px" />
-        </div>
-      </div>
-
-      <div style="margin-top:10px" class="small">Build Queue</div>
-      <div id="buildQueue" style="margin-top:6px;max-height:180px;overflow:auto"></div>
-
-      <hr style="margin:12px 0;border-color:rgba(255,255,255,0.03)">
-
-      <div class="small" style="margin-bottom:6px">Shipyard</div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button id="buildFleet">Build Fleet (Cost: <span id="buildCost">150</span>)</button>
-        <div class="small" style="opacity:0.8">Requires Shipyard</div>
-      </div>
-
-      <div style="margin-top:12px" class="small">Zoom</div>
-      <input id="zoomSlider" type="range" min="0.3" max="2.5" step="0.05" value="1" style="width:100%;margin-top:6px">
+  <div class="btnRow" style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+    <div style="flex:1;display:flex;gap:8px;align-items:center">
+      <button id="buildMine">Build Mine (Cost: <span id="mineCost">100</span>)</button>
+      <button id="buildShipyard">Build Shipyard (Cost: <span id="yardCost">300</span>)</button>
+      <button id="buildOutpost">Build Outpost (Cost: <span id="outpostCost">2500</span>)</button>
     </div>
-
-    <!-- Fleet panel: opens only when one or more fleets are selected -->
-    <div id="fleetPanel" class="panel" style="position:fixed;left:12px;bottom:12px;z-index:210;width:360px;display:none;box-shadow:0 12px 30px rgba(0,0,0,0.55)">
-      <div class="small" style="font-weight:600;margin-bottom:6px">Fleet Actions</div>
-      <div class="small">Selected Fleets: <span id="selFleetCount">0</span></div>
-      <div class="btnRow" style="margin-top:8px">
-        <button id="sendFleet">Send Fleet</button>
-        <button id="autoCapture" title="Automatically capture a chain of weak nearby systems">Auto Capture</button>
-        <button id="stopAutoCapture" title="Stop Auto Capture on selected fleets">Stop Auto</button>
-      </div>
-
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acIncludeNeutral" checked /> Include Neutrals</label>
-        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acIncludeAI" checked /> Include AIs</label>
-        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acStopIfSuicidal" /> Stop before suicidal attack</label>
-      </div>
+    <div style="width:90px;display:flex;flex-direction:column;align-items:center;justify-content:center">
+      <label class="small" style="margin:0;font-size:11px">Count</label>
+      <input id="buildCount" type="number" value="1" min="1" step="1" style="width:66px;padding:6px" />
     </div>
+  </div>
+
+  <div style="margin-top:8px" class="small">Build Queue</div>
+  <div id="buildQueue" style="max-height:160px; overflow:auto; margin-top:6px;"></div>
+
+  <div style="margin-top:10px">
+    <button id="buildFleet">Build Fleet (Cost: <span id="buildCost">150</span>)</button>
+  </div>
+</div>
+
+<!-- Fleet Panel: shown only when fleet(s) selected -->
+<div id="fleetPanel" style="position:fixed; right:14px; bottom:14px; z-index:121; width:360px; display:none; background: rgba(2,6,12,0.55); color:#dbe6ff; padding:12px; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.6);">
+  <div class="small">Fleets</div>
+  <div class="small">Selected Fleets: <span id="selFleetCount">0</span></div>
+  <div class="btnRow" style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+    <button id="sendFleet">Send Fleet</button>
+    <button id="autoCapture" title="Automatically capture a chain of weak nearby systems">Auto Capture</button>
+    <button id="stopAutoCapture" title="Stop Auto Capture on selected fleets">Stop Auto</button>
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acIncludeNeutral" checked /> Include Neutrals</label>
+    <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acIncludeAI" checked /> Include AIs</label>
+    <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="acStopIfSuicidal" /> Stop before suicidal attack</label>
+  </div>
+</div>
 
 
       <div id="canvasWrap">
@@ -621,7 +607,6 @@ function tick(dt){
   // recalc & UI
   recalcIncome();
   updateSelectionUI();
-  updatePanels();
   draw();
   checkWinConditions();
 }
@@ -1163,30 +1148,6 @@ aiInit();
 
 
 /* ===== UI & Interaction ===== */
-
-
-/* Panels visibility updater: shows systemPanel when a system is selected and fleetPanel when fleets are selected */
-function updatePanels(){
-  try{
-    const sysPanel = document.getElementById('systemPanel');
-    if(G.selectedSystem){
-      if(sysPanel) sysPanel.style.display = 'block';
-    } else {
-      if(sysPanel) sysPanel.style.display = 'none';
-    }
-    const fleetPanel = document.getElementById('fleetPanel');
-    if(G.selectedFleets && G.selectedFleets.length > 0){
-      if(fleetPanel) fleetPanel.style.display = 'block';
-      const cnt = document.getElementById('selFleetCount'); if(cnt) cnt.textContent = String(G.selectedFleets.length);
-    } else {
-      if(fleetPanel) fleetPanel.style.display = 'none';
-      const cnt = document.getElementById('selFleetCount'); if(cnt) cnt.textContent = '0';
-    }
-  }catch(e){
-    /* non-fatal */
-  }
-}
-
 function setupUI(){
   const canvas = document.getElementById('gameCanvas');
   G.canvas = canvas; G.ctx = canvas.getContext('2d');
@@ -1288,34 +1249,18 @@ function setupUI(){
   const chkHUD = document.getElementById('toggleHUD');
   const chkFooter = document.getElementById('toggleFooter');
 
-  
-function applyToggles(){
-    try{
-      const lp = document.getElementById('leftPane');
-      if(lp) lp.style.display = (document.getElementById('toggleLeftPane') && document.getElementById('toggleLeftPane').checked) ? 'block' : 'none';
-      const dp = document.getElementById('devConsolePanel');
-      if(dp) dp.style.display = (document.getElementById('toggleDevConsole') && document.getElementById('toggleDevConsole').checked) ? 'block' : 'none';
-      // The old HUD was removed — keep the always-on stats visible by default, but allow toggle if user wants
-      const statsEl = document.getElementById('alwaysStats');
-      const chkHUD = document.getElementById('toggleHUD');
-      if(statsEl){
-        if(chkHUD && !chkHUD.checked){
-          statsEl.style.display = 'none';
-        } else {
-          statsEl.style.display = 'flex';
-        }
-      }
-      const footerEl = document.getElementById('footer');
-      const chkFooter = document.getElementById('toggleFooter');
-      if(footerEl){
-        footerEl.style.display = (chkFooter && chkFooter.checked) ? (G.running ? 'block' : 'none') : 'none';
-      }
-    }catch(e){
-      /* ignore */
-    }
+  function applyToggles(){
+    
+    document.getElementById('leftPane').style.display = chkLeft.checked ? 'block' : 'none';
+    document.getElementById('devConsolePanel').style.display = chkDev.checked ? 'block' : 'none';
+    // alwaysHUD is shown when the game is running (we no longer hide the core HUD info with the toggle)
+    const always = document.getElementById('alwaysHUD');
+    if(always) always.style.display = G.running ? 'flex' : 'none';
+    document.getElementById('footer').style.display = chkFooter.checked ? (G.running ? 'block' : 'none') : 'none';
+    // resize canvas in case layout changed (small timeout so DOM recomputes)
     setTimeout(()=>{ try{ resize(); }catch(e){ if(G.canvas) draw(); } }, 80);
-}
-
+  
+  }
   uiBtn.addEventListener('click', ()=>{ uiPanel.style.display = uiPanel.style.display === 'none' ? 'block' : 'none'; setTimeout(()=>{ try{ resize(); }catch(e){ if(G.canvas) draw(); } }, 40); });
   chkLeft.addEventListener('change', applyToggles);
   chkDev.addEventListener('change', applyToggles);
@@ -1389,7 +1334,7 @@ function applyToggles(){
     if(G.sendMode){
       let nearest=null, nd=Infinity;
       for(let s of G.systems){ const d = Math.hypot(s.x-pos.x, s.y-pos.y); if(d<nd){ nd=d; nearest=s; } }
-      if(nearest && nd < 18 / G.view.scale){
+      if(nearest && nd < 28 / G.view.scale){
         for(let f of G.selectedFleets.slice()){
           const path = findPath(f.currentNode, nearest);
           if(path.length>1) sendFleetAlong(f, path);
@@ -1406,7 +1351,7 @@ function applyToggles(){
     // First, check if the player clicked near a fleet (moving or idle). Prefer selecting fleets over systems.
     let nearestFleet = null, fd = Infinity;
     for(let f of G.fleets){ if(f.owner !== 1) continue; const d = Math.hypot(f.pos.x - pos.x, f.pos.y - pos.y); if(d < fd){ fd = d; nearestFleet = f; } }
-    const fleetClickThreshold = 14 / G.view.scale;
+    const fleetClickThreshold = 22 / G.view.scale;
     if(nearestFleet && fd < fleetClickThreshold){
       // select the fleet (single selection)
       G.selectedFleets = [nearestFleet]; G.selectedSystem = null; updateSelectionUI(); draw();
@@ -1416,7 +1361,7 @@ function applyToggles(){
     // otherwise select a system
     let nearest=null, nd=Infinity;
     for(let s of G.systems){ const d = Math.hypot(s.x-pos.x, s.y-pos.y); if(d<nd){ nd=d; nearest=s; } }
-    if(nearest && nd < 18 / G.view.scale){ G.selectedSystem = nearest; G.selectedFleets=[]; updateSelectionUI(); draw(); }
+    if(nearest && nd < 28 / G.view.scale){ G.selectedSystem = nearest; G.selectedFleets=[]; updateSelectionUI(); draw(); }
     else { G.selectedSystem = null; updateSelectionUI(); draw(); }
   });
 }
@@ -1449,7 +1394,7 @@ function detectHover(sx,sy){
   if(best > 30 / G.view.scale) G.hoverEdge = null;
   for(let s of G.systems){
     const d = Math.hypot(s.x-pos.x, s.y-pos.y);
-    if(d < 12 / G.view.scale){ G.hoverNode = s; break; }
+    if(d < 20 / G.view.scale){ G.hoverNode = s; break; }
   }
 }
 
@@ -1966,6 +1911,22 @@ function checkWinConditions(){
   if(!isSpectator && playerSystems===0 && playerFleets===0){
     setTimeout(()=>{ alert('AI Wins!'); stopGame(); }, 10);
   }
+  // Show/hide the system/fleet panels based on current selection
+  try{
+    const sysPanel = document.getElementById('systemPanel');
+    const fltPanel = document.getElementById('fleetPanel');
+    if(G.selectedSystem){
+      if(sysPanel) sysPanel.style.display = 'block';
+    } else {
+      if(sysPanel) sysPanel.style.display = 'none';
+    }
+    if(G.selectedFleets && G.selectedFleets.length > 0){
+      if(fltPanel) fltPanel.style.display = 'block';
+    } else {
+      if(fltPanel) fltPanel.style.display = 'none';
+    }
+  } catch(e){}
+
 }
 
 /* ===== Start / Stop ===== */
@@ -1975,7 +1936,7 @@ function startGame(settings){
   generateGalaxy(settings);
   document.getElementById('menu').style.display='none';
   document.getElementById('topBar').style.display='flex';
-  /* HUD removed — always-on stats handled via #alwaysStats */;
+  document.getElementById('alwaysHUD').style.display='block';
   document.getElementById('footer').style.display='block';
   document.getElementById('statusText').textContent = 'Running — Seed: ' + (G.seed||'random');
 
@@ -2055,7 +2016,7 @@ function stopGame(){
 
   // Hide in-game HUD elements
   try{ document.getElementById('topBar').style.display='none'; }catch(e){}
-  try{ /* HUD removed — always-on stats handled via #alwaysStats */; }catch(e){}
+  try{ document.getElementById('alwaysHUD').style.display='none'; }catch(e){}
   try{ document.getElementById('footer').style.display='none'; }catch(e){}
 
   // Re-enable any player-specific controls that spectate mode may have disabled
@@ -2099,7 +2060,7 @@ function startSpectate(settings){
     // Update HUD display to indicate spectating
     const status = document.getElementById('statusText'); if(status) status.textContent = 'Spectating AI — Seed: ' + (G.seed||'random');
     // Keep HUD visible but read-only
-    /* HUD removed — always-on stats handled via #alwaysStats */;
+    document.getElementById('alwaysHUD').style.display = 'block';
     document.getElementById('footer').style.display = 'block';
 
     // Make sure updateSelectionUI doesn't try to show player credits
