@@ -68,14 +68,8 @@
         <div class="small">A lightweight real-time strategy prototype — HTML + JS. Configure and Launch.</div>
 
         <label for="difficulty">AI Difficulty</label>
-        <select id="difficulty">
-          <option value="0.6">Very Easy</option>
-          <option value="0.8">Easy</option>
-          <option value="1.0" selected>Normal</option>
-          <option value="1.25">Hard</option>
-          <option value="1.6">Very Hard</option>
-          <option value="2.2">Insane</option>
-        </select>
+<div class="small" style="margin-top:6px">Normal (fixed)</div>
+<input type="hidden" id="difficulty" value="1.0" />
 
         <label for="aiCount">Number of AI Opponents <span id="aiCountLabel">3</span></label>
         <input id="aiCount" type="range" min="1" max="100" value="3">
@@ -105,7 +99,7 @@
 
       <div id="settings" style="margin-top:12px">
         <div class="small">Tips</div>
-        <div class="small systemInfo" id="tipsText">Capture systems, build mines to increase income, build shipyards to produce fleets. AI difficulty affects budget and aggressiveness.</div>
+        <div class="small systemInfo" id="tipsText">Capture systems, build mines to increase income, build shipyards to produce fleets. AI difficulty (fixed) affects budget and aggressiveness.</div>
       </div>
     </div>
 
